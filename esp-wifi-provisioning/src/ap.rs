@@ -1,18 +1,17 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use embedded_svc::io::Write;
-use embedded_svc::wifi::{
-    AccessPointConfiguration, AuthMethod, ClientConfiguration, Configuration,
-};
 use esp_idf_svc::http::server::{Configuration as HttpConfig, EspHttpServer};
-use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
+use esp_idf_svc::io::Write;
+use esp_idf_svc::wifi::{
+    AccessPointConfiguration, AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi,
+};
 
-use crate::error::ProvisioningError;
+use crate::error::{BoxError, ProvisioningError};
 use crate::nvs::StoredCredentials;
-use crate::portal::{app_js, index_html, networks_json, style_css};
+use crate::portal::{index_html, networks_json};
 
-const AP_IP: &str = "192.168.4.1";
+const AP_IP: &str = "192.168.71.1";
 
 #[derive(Debug, Clone)]
 pub struct ApConfig {
@@ -64,33 +63,8 @@ pub fn run_portal(
         .fn_handler(
             "/",
             esp_idf_svc::http::Method::Get,
-            move |req| -> Result<(), anyhow::Error> {
+            move |req| -> Result<(), BoxError> {
                 req.into_ok_response()?.write_all(index_html().as_bytes())?;
-                Ok(())
-            },
-        )
-        .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
-
-    server
-        .fn_handler(
-            "/style.css",
-            esp_idf_svc::http::Method::Get,
-            move |req| -> Result<(), anyhow::Error> {
-                let mut resp = req.into_response(200, None, &[("Content-Type", "text/css")])?;
-                resp.write_all(style_css().as_bytes())?;
-                Ok(())
-            },
-        )
-        .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
-
-    server
-        .fn_handler(
-            "/app.js",
-            esp_idf_svc::http::Method::Get,
-            move |req| -> Result<(), anyhow::Error> {
-                let mut resp =
-                    req.into_response(200, None, &[("Content-Type", "application/javascript")])?;
-                resp.write_all(app_js().as_bytes())?;
                 Ok(())
             },
         )
@@ -100,7 +74,7 @@ pub fn run_portal(
         .fn_handler(
             "/networks",
             esp_idf_svc::http::Method::Get,
-            move |req| -> Result<(), anyhow::Error> {
+            move |req| -> Result<(), BoxError> {
                 let mut resp =
                     req.into_response(200, None, &[("Content-Type", "application/json")])?;
                 resp.write_all(networks_clone.as_bytes())?;
@@ -113,7 +87,7 @@ pub fn run_portal(
         .fn_handler(
             "/connect",
             esp_idf_svc::http::Method::Post,
-            move |mut req| -> Result<(), anyhow::Error> {
+            move |mut req| -> Result<(), BoxError> {
                 let mut body = Vec::new();
                 let mut buf = [0u8; 256];
                 loop {
@@ -181,18 +155,14 @@ fn build_ap_config(cfg: &ApConfig) -> Result<Configuration, ProvisioningError> {
 }
 
 fn parse_credentials(body: &[u8]) -> Result<StoredCredentials, &'static str> {
-    #[derive(serde::Deserialize)]
-    struct Payload {
-        ssid: String,
-        password: String,
-    }
-
-    let p: Payload = serde_json::from_slice(body).map_err(|_| "Invalid JSON")?;
-    if p.ssid.trim().is_empty() {
+    let s = std::str::from_utf8(body).map_err(|_| "Invalid UTF-8")?;
+    let (ssid, password) = s.split_once('\n').unwrap_or((s, ""));
+    let ssid = ssid.trim().to_string();
+    if ssid.is_empty() {
         return Err("SSID cannot be empty");
     }
     Ok(StoredCredentials {
-        ssid: p.ssid,
-        password: p.password,
+        ssid,
+        password: password.to_string(),
     })
 }

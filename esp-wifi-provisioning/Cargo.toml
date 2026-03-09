@@ -1,0 +1,13 @@
+[package]
+name = "esp-wifi-provisioning"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log           = { workspace = true }
+esp-idf-svc   = { workspace = true }
+esp-idf-hal   = { workspace = true }
+
+[build-dependencies]
+embuild = { workspace = true }
+minify-html = "0.18.1"

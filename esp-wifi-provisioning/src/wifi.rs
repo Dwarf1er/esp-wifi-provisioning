@@ -1,9 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use embedded_svc::wifi::{AuthMethod, ClientConfiguration, Configuration};
-use esp_idf_svc::wifi::BlockingWifi;
-use esp_idf_svc::wifi::EspWifi;
+use esp_idf_svc::wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi};
 
 use crate::error::ProvisioningError;
 use crate::nvs::StoredCredentials;

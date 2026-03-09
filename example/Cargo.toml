@@ -1,0 +1,23 @@
+[package]
+name = "example"
+version = "0.1.0"
+authors = ["Dwarf1er"]
+edition = "2021"
+resolver = "2"
+rust-version = "1.77"
+
+[[bin]]
+name = "example"
+harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
+
+[features]
+default = []
+
+[dependencies]
+log = { workspace = true }
+esp-idf-svc = { workspace = true }
+esp-idf-hal = { workspace = true }
+esp-wifi-provisioning = { path = "../esp-wifi-provisioning" }
+
+[build-dependencies]
+embuild = { workspace = true }

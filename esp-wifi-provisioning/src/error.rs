@@ -1,14 +1,16 @@
 use core::fmt;
 
+pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 #[derive(Debug)]
 pub enum ProvisioningError {
-    NvsAccess(anyhow::Error),
+    NvsAccess(BoxError),
     NvsCorrupt,
-    WifiDriver(anyhow::Error),
+    WifiDriver(BoxError),
     ConnectionTimeout,
     ConnectionFailed { attempts: u8 },
-    ApStart(anyhow::Error),
-    HttpServer(anyhow::Error),
+    ApStart(BoxError),
+    HttpServer(BoxError),
     InvalidCredentials,
 }
 

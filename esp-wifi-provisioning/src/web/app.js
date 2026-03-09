@@ -71,8 +71,8 @@ async function submit() {
   try {
     const r = await fetch('/connect', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ssid, password: pass })
+      headers: { 'Content-Type': 'text/plain' },
+      body: `${ssid}\n${pass}`
     });
     const j = await r.json();
     if (j.success) {
