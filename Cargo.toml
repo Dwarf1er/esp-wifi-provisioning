@@ -1,0 +1,16 @@
+[package]
+name = "esp-wifi-provisioning"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log           = "0.4"
+anyhow        = "1.0"
+serde         = { version = "1.0", features = ["derive"] }
+serde_json    = "1.0"
+esp-idf-svc   = { version = "0.51", features = ["std", "binstart"] }
+esp-idf-hal   = { version = "0.45", features = ["rmt-legacy"] }
+embedded-svc  = "0.28"
+
+[build-dependencies]
+embuild = "0.33"

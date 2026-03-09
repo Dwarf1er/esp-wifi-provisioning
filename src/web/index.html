@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>WiFi Setup</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+    <div class="card">
+        <h1>WiFi Setup</h1>
+        <div class="networks" id="networks"></div>
+        <div>
+            <label for="ssid">Network name (SSID)</label>
+            <input id="ssid" type="text" placeholder="e.g. MyHomeNetwork" autocomplete="off" autocorrect="off"
+                spellcheck="false" />
+            <label for="pass">Password</label>
+            <input id="pass" type="password" placeholder="Leave blank for open networks" />
+        </div>
+        <div class="spinner" id="spinner"></div>
+        <button class="btn" id="btn" onclick="submit()">Connect</button>
+        <div id="status"></div>
+    </div>
+    <script src="app.js"></script>
+</body>
+
+</html>

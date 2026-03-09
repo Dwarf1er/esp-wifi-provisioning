@@ -1,0 +1,137 @@
+*{
+    box-sizing:border-box;
+    margin:0;
+    padding:0
+}
+ body{
+    font-family:system-ui,sans-serif;
+    background:#0f172a;
+    color:#e2e8f0;
+     display:flex;
+    justify-content:center;
+    align-items:center;
+    min-height:100vh;
+    padding:1rem
+}
+ .card{
+    background:#1e293b;
+    border-radius:1rem;
+    padding:2rem;
+    width:100%;
+    max-width:420px;
+     box-shadow:0 25px 50px rgba(0,0,0,.5)
+}
+ h1{
+    font-size:1.4rem;
+    margin-bottom:1.5rem;
+    color:#f1f5f9;
+    text-align:center
+}
+ label{
+    display:block;
+    font-size:.8rem;
+    color:#94a3b8;
+    margin-bottom:.3rem
+}
+ input{
+    width:100%;
+    padding:.6rem .8rem;
+    background:#0f172a;
+    border:1px solid #334155;
+     border-radius:.5rem;
+    color:#f1f5f9;
+    font-size:1rem;
+    outline:none;
+    margin-bottom:1rem
+}
+ input:focus{
+    border-color:#6366f1
+}
+ .networks{
+    margin-bottom:1rem
+}
+ .net-item{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+     padding:.55rem .8rem;
+    border-radius:.5rem;
+    cursor:pointer;
+     border:1px solid transparent;
+    transition:background .15s
+}
+ .net-item:hover,.net-item.selected{
+    background:#334155;
+    border-color:#6366f1
+}
+ .net-ssid{
+    font-size:.95rem
+}
+ .net-rssi{
+    font-size:.75rem;
+    color:#64748b;
+    white-space:nowrap;
+    margin-left:.5rem
+}
+ .bars{
+    display:flex;
+    align-items:flex-end;
+    gap:2px;
+    height:14px;
+    margin-left:.5rem
+}
+ .bar{
+    width:4px;
+    background:#6366f1;
+    border-radius:1px
+}
+ .bar.off{
+    background:#334155
+}
+ .btn{
+    width:100%;
+    padding:.7rem;
+    background:#6366f1;
+    border:none;
+    border-radius:.5rem;
+     color:#fff;
+    font-size:1rem;
+    cursor:pointer;
+    font-weight:600;
+    transition:background .15s
+}
+ .btn:hover{
+    background:#4f46e5
+}
+ .btn:disabled{
+    background:#334155;
+    cursor:not-allowed
+}
+ #status{
+    margin-top:1rem;
+    text-align:center;
+    font-size:.85rem;
+    min-height:1.2rem
+}
+ .err{
+    color:#f87171
+}
+ .ok{
+    color:#4ade80
+}
+ .spinner{
+    display:none;
+    margin:0 auto 1rem;
+    width:36px;
+    height:36px;
+     border:3px solid #334155;
+    border-top-color:#6366f1;
+     border-radius:50%;
+    animation:spin .8s linear infinite
+}
+ @keyframes spin{
+    to{
+        transform:rotate(360deg)
+    }
+}
+
