@@ -34,25 +34,35 @@ pub fn run_portal(
     wifi: &mut BlockingWifi<EspWifi<'_>>,
     ap_config: &ApConfig,
 ) -> Result<StoredCredentials, ProvisioningError> {
-    let ap_cfg = build_ap_config(ap_config)?;
-    wifi.set_configuration(&ap_cfg)
+    wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()))
+        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+    wifi.start()
+        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+
+    let networks = crate::wifi::scan_networks(wifi).unwrap_or_else(|e| {
+        log::warn!("Scan failed ({e}), network list will be empty");
+        vec![]
+    });
+    log::info!("Scan found {} networks", networks.len());
+
+    wifi.stop()
+        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+
+    let networks_json_str = Arc::new(networks_json(&networks));
+
+    wifi.set_configuration(&build_ap_config(ap_config)?)
         .map_err(|e| ProvisioningError::ApStart(e.into()))?;
     wifi.start()
         .map_err(|e| ProvisioningError::ApStart(e.into()))?;
 
     log::info!(
-        "Soft-AP '{}' started on channel {} — connect and visit http://{}",
+        "Soft-AP '{}' started on channel {} | connect and visit http://{}",
         ap_config.ssid,
         ap_config.channel,
         AP_IP
     );
 
-    let networks = crate::wifi::scan_networks(wifi).unwrap_or_default();
-    log::info!("Scan found {} networks", networks.len());
-    let networks_json_str = Arc::new(networks_json(&networks));
-
     let submitted: Arc<Mutex<Option<StoredCredentials>>> = Arc::new(Mutex::new(None));
-
     let submitted_clone = Arc::clone(&submitted);
     let networks_clone = Arc::clone(&networks_json_str);
 
@@ -114,14 +124,18 @@ pub fn run_portal(
         .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
 
     log::info!(
-        "Setup portal running at http://{} — waiting for credentials…",
+        "Setup portal running at http://{} | waiting for credentials…",
         AP_IP
     );
+
     loop {
         thread::sleep(std::time::Duration::from_millis(250));
         if let Some(creds) = submitted.lock().unwrap().take() {
             log::info!("Credentials received for SSID '{}'", creds.ssid);
             drop(server);
+            thread::sleep(std::time::Duration::from_millis(500));
+            wifi.stop()
+                .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
             return Ok(creds);
         }
     }
@@ -138,20 +152,17 @@ fn build_ap_config(cfg: &ApConfig) -> Result<Configuration, ProvisioningError> {
         _ => (AuthMethod::None, Default::default()),
     };
 
-    Ok(Configuration::Mixed(
-        ClientConfiguration::default(),
-        AccessPointConfiguration {
-            ssid: cfg
-                .ssid
-                .as_str()
-                .try_into()
-                .map_err(|_| ProvisioningError::InvalidCredentials)?,
-            auth_method: auth,
-            password,
-            channel: cfg.channel,
-            ..Default::default()
-        },
-    ))
+    Ok(Configuration::AccessPoint(AccessPointConfiguration {
+        ssid: cfg
+            .ssid
+            .as_str()
+            .try_into()
+            .map_err(|_| ProvisioningError::InvalidCredentials)?,
+        auth_method: auth,
+        password,
+        channel: cfg.channel,
+        ..Default::default()
+    }))
 }
 
 fn parse_credentials(body: &[u8]) -> Result<StoredCredentials, &'static str> {

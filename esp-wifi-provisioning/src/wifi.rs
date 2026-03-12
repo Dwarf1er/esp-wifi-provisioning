@@ -36,13 +36,12 @@ pub struct ScannedNetwork {
 pub fn scan_networks(
     wifi: &mut BlockingWifi<EspWifi<'_>>,
 ) -> Result<Vec<ScannedNetwork>, ProvisioningError> {
-    let results = wifi
+    let mut networks: Vec<ScannedNetwork> = wifi
         .wifi_mut()
         .scan()
-        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
-
-    let mut networks: Vec<ScannedNetwork> = results
+        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?
         .into_iter()
+        .filter(|ap| !ap.ssid.is_empty())
         .map(|ap| ScannedNetwork {
             ssid: ap.ssid.as_str().to_string(),
             rssi: ap.signal_strength,
@@ -51,8 +50,9 @@ pub fn scan_networks(
         })
         .collect();
 
-    networks.sort_by(|a, b| b.rssi.cmp(&a.rssi));
+    networks.sort_unstable_by(|a, b| a.ssid.cmp(&b.ssid).then(b.rssi.cmp(&a.rssi)));
     networks.dedup_by(|a, b| a.ssid == b.ssid);
+    networks.sort_unstable_by(|a, b| b.rssi.cmp(&a.rssi));
 
     Ok(networks)
 }

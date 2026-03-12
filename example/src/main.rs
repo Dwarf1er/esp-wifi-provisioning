@@ -1,3 +1,4 @@
+use esp_idf_hal::gpio::PinDriver;
 use esp_idf_hal::prelude::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -18,10 +19,16 @@ fn main() {
     )
     .unwrap();
 
-    Provisioner::new(wifi_driver, nvs)
-        .ap_ssid("Example-Setup")
-        .provision()
-        .unwrap();
+    let reset_pin = PinDriver::input(peripherals.pins.gpio0).unwrap();
+
+    let provisioner = Provisioner::new(wifi_driver, nvs).ap_ssid("Example-Setup");
+
+    if reset_pin.is_low() {
+        log::info!("Factory reset pin held | clearing stored credentials");
+        provisioner.clear_credentials().unwrap();
+    }
+
+    provisioner.provision().unwrap();
 
     log::info!("WiFi ready!");
 }

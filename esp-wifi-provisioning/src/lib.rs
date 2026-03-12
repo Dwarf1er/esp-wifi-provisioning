@@ -61,6 +61,10 @@ impl<'d> Provisioner<'d> {
         self
     }
 
+    pub fn clear_credentials(&self) -> Result<(), ProvisioningError> {
+        nvs::clear_credentials(self.nvs.clone())
+    }
+
     pub fn provision(mut self) -> Result<(), ProvisioningError> {
         if !self.force_ap {
             match nvs::load_credentials(self.nvs.clone()) {
