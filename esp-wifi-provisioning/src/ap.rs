@@ -1,8 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::net::Ipv4Addr;
+use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 
 use esp_idf_svc::http::server::{Configuration as HttpConfig, EspHttpServer};
 use esp_idf_svc::io::Write;
+use esp_idf_svc::ipv4;
+use esp_idf_svc::netif::{EspNetif, NetifConfiguration};
 use esp_idf_svc::wifi::{
     AccessPointConfiguration, AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi,
 };
@@ -11,13 +15,12 @@ use crate::error::{BoxError, ProvisioningError};
 use crate::nvs::StoredCredentials;
 use crate::portal::{index_html, networks_json};
 
-const AP_IP: &str = "192.168.71.1";
-
 #[derive(Debug, Clone)]
 pub struct ApConfig {
     pub ssid: String,
     pub password: Option<String>,
     pub channel: u8,
+    pub ip: Ipv4Addr,
 }
 
 impl Default for ApConfig {
@@ -26,6 +29,7 @@ impl Default for ApConfig {
             ssid: "ESP32-Setup".into(),
             password: None,
             channel: 6,
+            ip: Ipv4Addr::new(192, 168, 4, 1),
         }
     }
 }
@@ -48,7 +52,26 @@ pub fn run_portal(
     wifi.stop()
         .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
 
-    let networks_json_str = Arc::new(networks_json(&networks));
+    let networks_json_str: Arc<str> = networks_json(&networks).into();
+
+    let ap_netif = EspNetif::new_with_conf(&NetifConfiguration {
+        ip_configuration: Some(ipv4::Configuration::Router(ipv4::RouterConfiguration {
+            subnet: ipv4::Subnet {
+                gateway: ap_config.ip,
+                mask: ipv4::Mask(24),
+            },
+            dhcp_enabled: true,
+            dns: Some(ap_config.ip),
+            secondary_dns: None,
+        })),
+        key: "WIFI_AP_PROV".try_into().unwrap(),
+        ..NetifConfiguration::wifi_default_router()
+    })
+    .map_err(|e| ProvisioningError::ApStart(e.into()))?;
+
+    wifi.wifi_mut()
+        .swap_netif_ap(ap_netif)
+        .map_err(|e| ProvisioningError::ApStart(e.into()))?;
 
     wifi.set_configuration(&build_ap_config(ap_config)?)
         .map_err(|e| ProvisioningError::ApStart(e.into()))?;
@@ -59,11 +82,10 @@ pub fn run_portal(
         "Soft-AP '{}' started on channel {} | connect and visit http://{}",
         ap_config.ssid,
         ap_config.channel,
-        AP_IP
+        ap_config.ip,
     );
 
-    let submitted: Arc<Mutex<Option<StoredCredentials>>> = Arc::new(Mutex::new(None));
-    let submitted_clone = Arc::clone(&submitted);
+    let (tx, rx) = mpsc::channel::<StoredCredentials>();
     let networks_clone = Arc::clone(&networks_json_str);
 
     let mut server = EspHttpServer::new(&HttpConfig::default())
@@ -110,7 +132,7 @@ pub fn run_portal(
 
                 let response_body = match parse_credentials(&body) {
                     Ok(creds) => {
-                        *submitted_clone.lock().unwrap() = Some(creds);
+                        tx.send(creds).ok();
                         r#"{"success":true}"#.to_string()
                     }
                     Err(msg) => format!(r#"{{"success":false,"message":"{}"}}"#, msg),
@@ -125,12 +147,12 @@ pub fn run_portal(
 
     log::info!(
         "Setup portal running at http://{} | waiting for credentials…",
-        AP_IP
+        ap_config.ip
     );
 
     loop {
         thread::sleep(std::time::Duration::from_millis(250));
-        if let Some(creds) = submitted.lock().unwrap().take() {
+        if let Ok(creds) = rx.try_recv() {
             log::info!("Credentials received for SSID '{}'", creds.ssid);
             drop(server);
             thread::sleep(std::time::Duration::from_millis(500));

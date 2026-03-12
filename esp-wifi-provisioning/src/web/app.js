@@ -1,9 +1,11 @@
+// START_DEV
 const DEV_NETWORKS = [
   { ssid: "DevNetwork_5G",  rssi: -42 },
   { ssid: "DevNetwork_2G",  rssi: -61 },
   { ssid: "Neighbor_WiFi",  rssi: -74 },
   { ssid: "WeakSignal",     rssi: -88 },
 ];
+// END_DEV
 
 const netDiv  = document.getElementById('networks');
 const ssidIn  = document.getElementById('ssid');

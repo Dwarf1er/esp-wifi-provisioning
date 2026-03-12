@@ -29,8 +29,6 @@ impl Default for RetryConfig {
 pub struct ScannedNetwork {
     pub ssid: String,
     pub rssi: i8,
-    pub channel: u8,
-    pub auth: AuthMethod,
 }
 
 pub fn scan_networks(
@@ -45,8 +43,6 @@ pub fn scan_networks(
         .map(|ap| ScannedNetwork {
             ssid: ap.ssid.as_str().to_string(),
             rssi: ap.signal_strength,
-            channel: ap.channel,
-            auth: ap.auth_method.unwrap_or(AuthMethod::None),
         })
         .collect();
 
@@ -124,6 +120,7 @@ fn try_connect(
     wifi: &mut BlockingWifi<EspWifi<'_>>,
     timeout: Duration,
 ) -> Result<(), ProvisioningError> {
+    let _ = wifi.disconnect();
     wifi.connect()
         .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
 

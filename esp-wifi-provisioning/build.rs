@@ -6,11 +6,12 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let out_dir = Path::new(&out_dir);
 
-    let html = fs::read_to_string("./src/web/index.html").unwrap();
-    let css = fs::read_to_string("./src/web/style.css").unwrap();
-    let js = fs::read_to_string("./src/web/app.js").unwrap();
+    let html =
+        fs::read_to_string("./src/web/index.html").expect("failed to read src/web/index.html");
+    let css = fs::read_to_string("./src/web/style.css").expect("failed to read src/web/style.css");
+    let js = fs::read_to_string("./src/web/app.js").expect("failed to read src/web/app.js");
 
-    let js = strip_dev_block(&js, "const DEV_NETWORKS", "];");
+    let js = strip_dev_block(&js, "// START_DEV", "// END_DEV");
 
     let combined = html
         .replace(
