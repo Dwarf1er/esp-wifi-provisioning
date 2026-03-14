@@ -29,6 +29,7 @@ impl Default for RetryConfig {
 pub struct ScannedNetwork {
     pub ssid: String,
     pub rssi: i8,
+    pub auth_method: AuthMethod,
 }
 
 pub fn scan_networks(
@@ -43,6 +44,7 @@ pub fn scan_networks(
         .map(|ap| ScannedNetwork {
             ssid: ap.ssid.as_str().to_string(),
             rssi: ap.signal_strength,
+            auth_method: ap.auth_method.unwrap_or(AuthMethod::None),
         })
         .collect();
 
@@ -58,12 +60,6 @@ pub fn connect_with_retry(
     creds: &StoredCredentials,
     config: &RetryConfig,
 ) -> Result<(), ProvisioningError> {
-    let auth = if creds.password.is_empty() {
-        AuthMethod::None
-    } else {
-        AuthMethod::WPA2Personal
-    };
-
     let sta_config = Configuration::Client(ClientConfiguration {
         ssid: creds
             .ssid
@@ -75,7 +71,7 @@ pub fn connect_with_retry(
             .as_str()
             .try_into()
             .map_err(|_| ProvisioningError::InvalidCredentials)?,
-        auth_method: auth,
+        auth_method: creds.auth_method,
         ..Default::default()
     });
 
@@ -95,7 +91,7 @@ pub fn connect_with_retry(
     for attempt in 1..=config.max_attempts {
         log::info!("WiFi connect attempt {}/{}", attempt, config.max_attempts);
 
-        match try_connect(wifi, config.connect_timeout) {
+        match try_connect(wifi) {
             Ok(()) => {
                 log::info!("WiFi connected on attempt {}", attempt);
                 return Ok(());
@@ -113,29 +109,17 @@ pub fn connect_with_retry(
 
     Err(ProvisioningError::ConnectionFailed {
         attempts: config.max_attempts,
+        cause: crate::error::ConnectionFailureCause::DriverError(
+            "exhausted all connection attempts".into(),
+        ),
     })
 }
 
-fn try_connect(
-    wifi: &mut BlockingWifi<EspWifi<'_>>,
-    timeout: Duration,
-) -> Result<(), ProvisioningError> {
+fn try_connect(wifi: &mut BlockingWifi<EspWifi<'_>>) -> Result<(), ProvisioningError> {
     let _ = wifi.disconnect();
     wifi.connect()
         .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
-
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if wifi
-            .is_up()
-            .map_err(|e| ProvisioningError::WifiDriver(e.into()))?
-        {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = wifi.disconnect();
-            return Err(ProvisioningError::ConnectionTimeout);
-        }
-        thread::sleep(Duration::from_millis(200));
-    }
+    wifi.wait_netif_up()
+        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+    Ok(())
 }

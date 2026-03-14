@@ -1,4 +1,6 @@
 pub mod ap;
+#[cfg(feature = "captive-portal")]
+pub mod dns;
 pub mod error;
 pub mod nvs;
 pub mod portal;
@@ -65,7 +67,7 @@ impl<'d> Provisioner<'d> {
         nvs::clear_credentials(self.nvs.clone())
     }
 
-    pub fn provision(mut self) -> Result<(), ProvisioningError> {
+    pub fn provision(mut self) -> Result<BlockingWifi<EspWifi<'d>>, ProvisioningError> {
         if !self.force_ap {
             match nvs::load_credentials(self.nvs.clone()) {
                 Ok(Some(creds)) => {
@@ -74,7 +76,7 @@ impl<'d> Provisioner<'d> {
                         creds.ssid
                     );
                     match self.try_connect_sta(&creds) {
-                        Ok(()) => return Ok(()),
+                        Ok(()) => return Ok(self.wifi),
                         Err(e) => log::warn!("Stored credentials failed: {e}"),
                     }
                 }
@@ -86,7 +88,7 @@ impl<'d> Provisioner<'d> {
                 }
             }
         } else {
-            log::info!("force_ap_mode set — skipping NVS lookup");
+            log::info!("force_ap_mode set | skipping NVS lookup");
         }
 
         loop {
@@ -102,10 +104,10 @@ impl<'d> Provisioner<'d> {
                     if let Err(e) = nvs::save_credentials(self.nvs.clone(), &creds) {
                         log::warn!("Could not save credentials to NVS: {e}");
                     }
-                    return Ok(());
+                    return Ok(self.wifi);
                 }
                 Err(e) => {
-                    log::warn!("New credentials failed: {e} — re-opening portal");
+                    log::warn!("New credentials failed: {e} | re-opening portal");
                 }
             }
         }
@@ -113,9 +115,5 @@ impl<'d> Provisioner<'d> {
 
     fn try_connect_sta(&mut self, creds: &StoredCredentials) -> Result<(), ProvisioningError> {
         wifi::connect_with_retry(&mut self.wifi, creds, &self.retry_config)
-    }
-
-    pub fn into_wifi(self) -> BlockingWifi<EspWifi<'d>> {
-        self.wifi
     }
 }

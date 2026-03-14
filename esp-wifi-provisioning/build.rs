@@ -32,6 +32,11 @@ fn main() {
         },
     );
 
+    assert!(
+        !minified.is_empty(),
+        "minify_html produced empty output | check that src/web/index.html is well-formed"
+    );
+
     fs::write(out_dir.join("index.min.html"), &minified).unwrap();
 
     println!("cargo:rerun-if-changed=./src/web/index.html");
@@ -50,7 +55,7 @@ fn strip_dev_block(src: &str, start_marker: &str, end_marker: &str) -> String {
             out.push_str(line);
             out.push('\n');
         }
-        if skipping && line.trim_end().ends_with(end_marker) {
+        if skipping && line.trim_start().starts_with(end_marker) {
             skipping = false;
         }
     }

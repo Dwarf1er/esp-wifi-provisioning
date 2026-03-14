@@ -28,7 +28,7 @@ fn main() {
         provisioner.clear_credentials().unwrap();
     }
 
-    provisioner.provision().unwrap();
+    let _wifi = provisioner.provision().unwrap();
 
     log::info!("WiFi ready!");
 }

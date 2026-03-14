@@ -11,17 +11,25 @@
 <body>
     <div class="card">
         <h1>WiFi Setup</h1>
-        <div class="networks" id="networks"></div>
-        <div>
-            <label for="ssid">Network name (SSID)</label>
-            <input id="ssid" type="text" placeholder="e.g. MyHomeNetwork" autocomplete="off" autocorrect="off"
-                spellcheck="false" />
-            <label for="pass">Password</label>
-            <input id="pass" type="password" placeholder="Leave blank for open networks" />
-        </div>
-        <div class="spinner" id="spinner"></div>
-        <button class="btn" id="btn" onclick="submit()">Connect</button>
-        <div id="status"></div>
+        <div class="networks" id="networks" role="listbox" aria-label="Available WiFi networks"></div>
+        <form id="wifi-form">
+            <div>
+                <label for="ssid">Network name (SSID)</label>
+                <input id="ssid" type="text" placeholder="e.g. MyHomeNetwork" autocomplete="off" autocorrect="off"
+                    spellcheck="false" aria-describedby="status" />
+                <label for="pass">Password</label>
+                <div class="pass-wrap">
+                    <input id="pass" type="password" placeholder="Leave blank for open networks"
+                        aria-describedby="status" />
+                    <button type="button" id="toggle-pass" class="eye-btn" aria-label="Show password">
+                        <span class="eye-icon striked">👁</span>
+                    </button>
+                </div>
+            </div>
+            <div class="spinner" id="spinner"></div>
+            <button class="btn" id="btn" type="submit">Connect</button>
+        </form>
+        <div id="status" aria-live="polite"></div>
     </div>
     <script src="app.js"></script>
 </body>

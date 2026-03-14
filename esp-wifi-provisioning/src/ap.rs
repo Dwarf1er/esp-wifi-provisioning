@@ -12,8 +12,12 @@ use esp_idf_svc::wifi::{
 };
 
 use crate::error::{BoxError, ProvisioningError};
+use crate::nvs::MAX_PASS_LEN;
+use crate::nvs::MAX_SSID_LEN;
 use crate::nvs::StoredCredentials;
 use crate::portal::{index_html, networks_json};
+
+const MAX_BODY_SIZE: usize = MAX_SSID_LEN + MAX_PASS_LEN + 2;
 
 #[derive(Debug, Clone)]
 pub struct ApConfig {
@@ -21,6 +25,12 @@ pub struct ApConfig {
     pub password: Option<String>,
     pub channel: u8,
     pub ip: Ipv4Addr,
+    /// When true, starts a DNS server that resolves all domains to the AP IP
+    /// and registers OS-specific captive portal detection endpoints, triggering
+    /// the "Sign in to network" popup on connecting devices.
+    /// Only available when compiled with the `captive-portal` feature.
+    #[cfg(feature = "captive-portal")]
+    pub captive_portal: bool,
 }
 
 impl Default for ApConfig {
@@ -30,6 +40,8 @@ impl Default for ApConfig {
             password: None,
             channel: 6,
             ip: Ipv4Addr::new(192, 168, 4, 1),
+            #[cfg(feature = "captive-portal")]
+            captive_portal: true,
         }
     }
 }
@@ -49,8 +61,10 @@ pub fn run_portal(
     });
     log::info!("Scan found {} networks", networks.len());
 
-    wifi.stop()
-        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+    wifi.stop().map_err(|e| {
+        let _ = wifi.stop();
+        ProvisioningError::WifiDriver(e.into())
+    })?;
 
     let networks_json_str: Arc<str> = networks_json(&networks).into();
 
@@ -85,11 +99,24 @@ pub fn run_portal(
         ap_config.ip,
     );
 
+    #[cfg(feature = "captive-portal")]
+    let _dns = if ap_config.captive_portal {
+        Some(crate::dns::DnsServer::start(ap_config.ip)?)
+    } else {
+        None
+    };
+
     let (tx, rx) = mpsc::channel::<StoredCredentials>();
     let networks_clone = Arc::clone(&networks_json_str);
 
     let mut server = EspHttpServer::new(&HttpConfig::default())
         .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
+
+    #[cfg(feature = "captive-portal")]
+    if ap_config.captive_portal {
+        crate::dns::register_captive_portal_handlers(&mut server, ap_config.ip)
+            .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
+    }
 
     server
         .fn_handler(
@@ -128,6 +155,11 @@ pub fn run_portal(
                         break;
                     }
                     body.extend_from_slice(&buf[..n]);
+                    if body.len() > MAX_BODY_SIZE {
+                        req.into_response(400, Some("Bad Request"), &[])?
+                            .write_all(b"")?;
+                        return Ok(());
+                    }
                 }
 
                 let response_body = match parse_credentials(&body) {
@@ -147,18 +179,25 @@ pub fn run_portal(
 
     log::info!(
         "Setup portal running at http://{} | waiting for credentials…",
-        ap_config.ip
+        ap_config.ip,
     );
 
     loop {
-        thread::sleep(std::time::Duration::from_millis(250));
-        if let Ok(creds) = rx.try_recv() {
-            log::info!("Credentials received for SSID '{}'", creds.ssid);
-            drop(server);
-            thread::sleep(std::time::Duration::from_millis(500));
-            wifi.stop()
-                .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
-            return Ok(creds);
+        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(creds) => {
+                log::info!("Credentials received for SSID '{}'", creds.ssid);
+                drop(server);
+                thread::sleep(std::time::Duration::from_millis(500));
+                wifi.stop()
+                    .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+                return Ok(creds);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(ProvisioningError::HttpServer(
+                    "handler channel closed unexpectedly".into(),
+                ));
+            }
         }
     }
 }
@@ -191,11 +230,18 @@ fn parse_credentials(body: &[u8]) -> Result<StoredCredentials, &'static str> {
     let s = std::str::from_utf8(body).map_err(|_| "Invalid UTF-8")?;
     let (ssid, password) = s.split_once('\n').unwrap_or((s, ""));
     let ssid = ssid.trim().to_string();
+    let password = password.trim_end_matches(['\r', '\n']).to_string();
     if ssid.is_empty() {
         return Err("SSID cannot be empty");
     }
+    let auth_method = if password.is_empty() {
+        AuthMethod::None
+    } else {
+        AuthMethod::WPA2Personal
+    };
     Ok(StoredCredentials {
         ssid,
-        password: password.to_string(),
+        password,
+        auth_method,
     })
 }

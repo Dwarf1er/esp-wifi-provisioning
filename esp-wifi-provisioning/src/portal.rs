@@ -11,8 +11,25 @@ pub fn networks_json(networks: &[crate::wifi::ScannedNetwork]) -> String {
         if i > 0 {
             out.push(',');
         }
-        let escaped_ssid = n.ssid.replace('\\', "\\\\").replace('"', "\\\"");
-        write!(out, r#"{{"ssid":"{}","rssi":{}}}"#, escaped_ssid, n.rssi).unwrap();
+        let escaped_ssid = n
+            .ssid
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e")
+            .replace('&', "\\u0026");
+
+        let secure = match n.auth_method {
+            AuthMethod::None => false,
+            _ => true,
+        };
+
+        write!(
+            out,
+            r#"{{"ssid":"{}","rssi":{},"secure":{}}}"#,
+            escaped_ssid, n.rssi, secure
+        )
+        .unwrap();
     }
     out.push(']');
     out
