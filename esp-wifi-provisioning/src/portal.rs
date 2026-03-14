@@ -1,3 +1,5 @@
+use esp_idf_svc::wifi::AuthMethod;
+
 static INDEX_HTML: &str = include_str!(concat!(env!("OUT_DIR"), "/index.min.html"));
 
 pub fn index_html() -> &'static str {
