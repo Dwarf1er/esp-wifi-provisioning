@@ -53,32 +53,60 @@ function barsHtml(n) {
 function renderNetworks(networks) {
   netDiv.innerHTML = '';
 
-  networks.forEach(net => {
-      const el = document.createElement('div');
-
+  networks.forEach((net, index) => {
+    const el = document.createElement('div');
     el.className = 'net-item';
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('role', 'option');
+    el.setAttribute('aria-selected', 'false');
+
+    const secureLabel = net.secure ? " (secure network)" : " (open network)";
+
     el.innerHTML =
-      `<span class="net-ssid" data-lock="${net.secure ? '🔒' : ''}">${net.ssid}</span>` +
+      `<span class="net-ssid" data-lock="${net.secure ? '🔒' : ''}">
+        ${net.ssid}<span class="visually-hidden">${secureLabel}</span>
+      </span>` +
       `<span class="net-meta">` +
       `<span class="net-rssi">${net.rssi} dBm</span>` +
       barsHtml(rssiToBars(net.rssi)) +
       `</span>`;
 
-    el.addEventListener("click", () => {
-      document.querySelectorAll('.net-item')
-            .forEach(e => {
-                e.classList.remove('selected');
-                e.setAttribute('aria-selected', 'false');
-            });
+    function selectNetwork() {
+      document.querySelectorAll('.net-item').forEach(e => {
+        e.classList.remove('selected');
+        e.setAttribute('aria-selected', 'false');
+      });
 
       el.classList.add('selected');
-        el.setAttribute('aria-selected', 'true');
+      el.setAttribute('aria-selected', 'true');
       ssidIn.value = net.ssid;
       passIn.focus();
+    }
+
+    el.addEventListener('click', selectNetwork);
+
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        selectNetwork();
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = el.nextElementSibling || netDiv.firstElementChild;
+        next.focus();
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = el.previousElementSibling || netDiv.lastElementChild;
+        prev.focus();
+      }
     });
 
     netDiv.appendChild(el);
   });
+
+  const firstItem = netDiv.querySelector('.net-item');
+  firstItem?.focus();
 }
 
 async function loadNetworks() {
