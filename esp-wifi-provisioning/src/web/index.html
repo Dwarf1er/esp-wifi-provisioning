@@ -11,9 +11,17 @@
 <body>
     <div class="card">
         <h1>WiFi Setup</h1>
-        <div class="network-scroll-wrap">
-            <div class="networks" id="networks" role="listbox" aria-label="Available WiFi networks"></div>
+        <div class="networks-header">
+            <span class="networks-label">Available networks</span>
+            <button type="button" id="rescan-btn" class="rescan-btn" aria-label="Rescan for networks">
+                ↺ Rescan
+            </button>
         </div>
+        <div class="networks-scroll-wrap">
+            <div class="networks" id="networks" role="listbox" aria-label="Available WiFi networks" tabindex="-1"
+                aria-activedescendant=""></div>
+        </div>
+        <div id="network-announce" aria-live="polite" class="visually-hidden"></div>
         <form id="wifi-form">
             <div>
                 <label for="ssid">Network name (SSID)</label>
@@ -22,8 +30,9 @@
                 <label for="pass">Password</label>
                 <div class="pass-wrap">
                     <input id="pass" type="password" placeholder="Leave blank for open networks"
-                        aria-describedby="status" />
-                    <button type="button" id="toggle-pass" class="eye-btn" aria-label="Show password">
+                        autocomplete="current-password" minlength="8" aria-describedby="pass-hint status" />
+                    <button type="button" id="toggle-pass" class="eye-btn" aria-label="Show password"
+                        aria-pressed="false">
                         <span class="eye-icon striked">👁</span>
                     </button>
                 </div>
