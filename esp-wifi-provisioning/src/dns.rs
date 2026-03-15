@@ -42,8 +42,9 @@ fn run(ap_ip: Ipv4Addr, stop: mpsc::Receiver<()>) {
 
     let mut buf = [0u8; 512];
     loop {
-        if stop.try_recv().is_ok() {
-            break;
+        match stop.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {}
         }
 
         let (len, src) = match socket.recv_from(&mut buf) {
