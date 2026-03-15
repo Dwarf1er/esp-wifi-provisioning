@@ -27,6 +27,9 @@ const DEV_NETWORKS = [{
 ];
 // END_DEV
 
+const WPA_PASS_MIN = 8;
+const WPA_PASS_MAX = 63;
+
 const netDiv = document.getElementById('networks');
 const ssidIn = document.getElementById('ssid');
 const passIn = document.getElementById('pass');
@@ -38,6 +41,7 @@ const statusEl = document.getElementById('status');
 const spinner = document.getElementById('spinner');
 const rescanBtn = document.getElementById('rescan-btn');
 const announceEl = document.getElementById('network-announce');
+const passHint = document.getElementById('pass-hint');
 
 togglePass.addEventListener("click", () => {
     const hidden = passIn.type === "password";
@@ -52,6 +56,37 @@ togglePass.addEventListener("click", () => {
 
     togglePass.setAttribute("aria-pressed", hidden ? "true" : "false");
 });
+
+passIn.addEventListener("input", () => validatePass(false));
+
+function validatePass(isFinal) {
+    const val = passIn.value;
+
+    if (val.length === 0) {
+        setPassHint('', '');
+        return true;
+    }
+
+    if (val.length < WPA_PASS_MIN) {
+        const remaining = WPA_PASS_MIN - val.length;
+        const charWord  = remaining === 1 ? 'character' : 'characters';
+        setPassHint(`WPA password needs ${remaining} more ${charWord} (min ${WPA_PASS_MIN})`, 'err');
+        return isFinal ? false : false;
+    }
+
+    if (val.length > WPA_PASS_MAX) {
+        setPassHint(`Password is too long (max ${WPA_PASS_MAX} characters)`, 'err');
+        return false;
+    }
+
+    setPassHint(`Password length looks good (${val.length}/${WPA_PASS_MAX})`, 'ok');
+    return true;
+}
+
+function setPassHint(msg, cls) {
+    passHint.textContent = msg;
+    passHint.className   = `pass-hint${cls ? ` pass-hint--${cls}` : ''}`;
+}
 
 form.addEventListener("submit", e => {
     e.preventDefault();
@@ -106,6 +141,7 @@ function renderNetworks(networks) {
             netDiv.setAttribute('aria-activedescendant', id);
             ssidIn.value = net.ssid;
             announceEl.textContent = `Selected: ${net.ssid}`;
+            validatePass(false);
             if (jumpFocus) passIn.focus();
         }
 
@@ -170,6 +206,11 @@ async function handleSubmit() {
         return;
     }
 
+    if (!validatePass(true)) {
+        passIn.focus();
+        return;
+    }
+
     btn.disabled = true;
     spinner.style.display = 'block';
     setStatus('Connecting…', '');
@@ -211,4 +252,18 @@ function setStatus(msg, cls) {
     });
 }
 
+async function checkLastError() {
+    try {
+        const r = await fetch('/status');
+        const j = await r.json();
+        if (j.error) {
+            document.getElementById('last-error-msg').textContent = j.error;
+            document.getElementById('last-error').removeAttribute('hidden');
+        }
+    } catch { 
+        // non-fatal, banner stays hidden if /status is unreachable
+    }
+}
+
+checkLastError();
 loadNetworks();

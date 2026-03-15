@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
@@ -35,21 +36,43 @@ pub struct ScannedNetwork {
 pub fn scan_networks(
     wifi: &mut BlockingWifi<EspWifi<'_>>,
 ) -> Result<Vec<ScannedNetwork>, ProvisioningError> {
-    let mut networks: Vec<ScannedNetwork> = wifi
+    let mut best: HashMap<String, ScannedNetwork> = HashMap::new();
+
+    for ap in wifi
         .wifi_mut()
         .scan()
         .map_err(|e| ProvisioningError::WifiDriver(e.into()))?
-        .into_iter()
-        .filter(|ap| !ap.ssid.is_empty())
-        .map(|ap| ScannedNetwork {
-            ssid: ap.ssid.as_str().to_string(),
-            rssi: ap.signal_strength,
-            auth_method: ap.auth_method.unwrap_or(AuthMethod::None),
-        })
-        .collect();
+    {
+        if ap.ssid.is_empty() {
+            continue;
+        }
 
-    networks.sort_unstable_by(|a, b| a.ssid.cmp(&b.ssid).then(b.rssi.cmp(&a.rssi)));
-    networks.dedup_by(|a, b| a.ssid == b.ssid);
+        let ssid = ap.ssid.as_str().to_string();
+        let rssi = ap.signal_strength;
+        let auth = ap.auth_method.unwrap_or(AuthMethod::None);
+
+        match best.get_mut(&ssid) {
+            Some(existing) => {
+                if rssi > existing.rssi {
+                    existing.rssi = rssi;
+                    existing.auth_method = auth;
+                }
+            }
+            None => {
+                best.insert(
+                    ssid.clone(),
+                    ScannedNetwork {
+                        ssid,
+                        rssi,
+                        auth_method: auth,
+                    },
+                );
+            }
+        }
+    }
+
+    let mut networks: Vec<ScannedNetwork> = best.into_values().collect();
+
     networks.sort_unstable_by(|a, b| b.rssi.cmp(&a.rssi));
 
     Ok(networks)

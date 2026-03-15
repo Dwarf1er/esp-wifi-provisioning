@@ -1,5 +1,4 @@
 pub mod ap;
-#[cfg(feature = "captive-portal")]
 pub mod dns;
 pub mod error;
 pub mod nvs;
@@ -58,8 +57,8 @@ impl<'d> Provisioner<'d> {
         self
     }
 
-    pub fn force_ap_mode(mut self, force: bool) -> Self {
-        self.force_ap = force;
+    pub fn force_ap(mut self) -> Self {
+        self.force_ap = true;
         self
     }
 
@@ -91,8 +90,10 @@ impl<'d> Provisioner<'d> {
             log::info!("force_ap_mode set | skipping NVS lookup");
         }
 
+        let last_error: Option<String> = None;
+
         loop {
-            let creds = ap::run_portal(&mut self.wifi, &self.ap_config)?;
+            let creds = ap::run_portal(&mut self.wifi, &self.ap_config, last_error.as_deref())?;
 
             if creds.ssid.is_empty() {
                 log::warn!("Empty SSID submitted, re-opening portal");

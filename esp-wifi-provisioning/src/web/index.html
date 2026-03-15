@@ -11,6 +11,10 @@
 <body>
     <div class="card">
         <h1>WiFi Setup</h1>
+        <div id="last-error" class="last-error" hidden>
+            <span class="last-error-icon" aria-hidden="true">⚠</span>
+            <span id="last-error-msg"></span>
+        </div>
         <div class="networks-header">
             <span class="networks-label">Available networks</span>
             <button type="button" id="rescan-btn" class="rescan-btn" aria-label="Rescan for networks">
@@ -36,6 +40,7 @@
                         <span class="eye-icon striked">👁</span>
                     </button>
                 </div>
+                <span id="pass-hint" class="pass-hint" aria-live="polite"></span>
             </div>
             <div class="spinner" id="spinner"></div>
             <button class="btn" id="btn" type="submit">Connect</button>

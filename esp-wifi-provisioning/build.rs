@@ -3,7 +3,7 @@ use std::{env, fs, path::Path};
 fn main() {
     embuild::espidf::sysenv::output();
 
-    let out_dir = env::var("OUT_DIR").unwrap();
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set, is this being run by cargo?");
     let out_dir = Path::new(&out_dir);
 
     let html =
@@ -47,17 +47,30 @@ fn main() {
 fn strip_dev_block(src: &str, start_marker: &str, end_marker: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut skipping = false;
+    let mut found_start = false;
+
     for line in src.lines() {
-        if !skipping && line.trim_start().starts_with(start_marker) {
+        let trimmed = line.trim_start();
+        if !skipping && trimmed.starts_with(start_marker) {
             skipping = true;
+            found_start = true;
+            continue;
         }
-        if !skipping {
-            out.push_str(line);
-            out.push('\n');
+        if skipping {
+            if trimmed.starts_with(end_marker) {
+                skipping = false;
+            }
+            continue;
         }
-        if skipping && line.trim_start().starts_with(end_marker) {
-            skipping = false;
-        }
+        out.push_str(line);
+        out.push('\n');
     }
+
+    assert!(
+        !found_start || !skipping,
+        "Found '{start_marker}' in app.js but no matching '{end_marker}' | \
+         dev block is unterminated"
+    );
+
     out
 }

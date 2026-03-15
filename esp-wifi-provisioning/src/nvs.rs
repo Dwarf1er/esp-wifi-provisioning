@@ -6,8 +6,8 @@ const NVS_NAMESPACE: &str = "wifi_prov";
 const KEY_SSID: &str = "ssid";
 const KEY_PASSWORD: &str = "password";
 const KEY_AUTH_METHOD: &str = "auth_method";
-pub const MAX_SSID_LEN: usize = 32;
-pub const MAX_PASS_LEN: usize = 64;
+pub(crate) const MAX_SSID_LEN: usize = 32;
+pub(crate) const MAX_PASS_LEN: usize = 64;
 
 #[derive(Clone)]
 pub struct StoredCredentials {
@@ -33,7 +33,7 @@ fn open_nvs(
         .map_err(|e| ProvisioningError::NvsAccess(e.into()))
 }
 
-pub fn load_credentials(
+pub(crate) fn load_credentials(
     partition: EspNvsPartition<NvsDefault>,
 ) -> Result<Option<StoredCredentials>, ProvisioningError> {
     let nvs = open_nvs(partition, false)?;
@@ -63,7 +63,7 @@ pub fn load_credentials(
     }))
 }
 
-pub fn save_credentials(
+pub(crate) fn save_credentials(
     partition: EspNvsPartition<NvsDefault>,
     creds: &StoredCredentials,
 ) -> Result<(), ProvisioningError> {
@@ -93,7 +93,9 @@ pub fn save_credentials(
     Ok(())
 }
 
-pub fn clear_credentials(partition: EspNvsPartition<NvsDefault>) -> Result<(), ProvisioningError> {
+pub(crate) fn clear_credentials(
+    partition: EspNvsPartition<NvsDefault>,
+) -> Result<(), ProvisioningError> {
     let mut nvs = open_nvs(partition, true)?;
 
     nvs.remove(KEY_SSID)
@@ -117,6 +119,11 @@ fn auth_method_to_u8(m: AuthMethod) -> u8 {
         AuthMethod::WPA3Personal => 6,
         AuthMethod::WPA2WPA3Personal => 7,
         AuthMethod::WAPIPersonal => 8,
+        #[allow(unreachable_patterns)]
+        _ => {
+            log::warn!("Unknown AuthMethod variant, storing as WPA2Personal");
+            3
+        }
     }
 }
 
@@ -131,6 +138,9 @@ fn auth_method_from_u8(v: u8) -> AuthMethod {
         6 => AuthMethod::WPA3Personal,
         7 => AuthMethod::WPA2WPA3Personal,
         8 => AuthMethod::WAPIPersonal,
-        _ => AuthMethod::WPA2Personal,
+        _ => {
+            log::warn!("Unrecognised auth_method byte {v} in NVS, defaulting to WPA2Personal");
+            AuthMethod::WPA2Personal
+        }
     }
 }

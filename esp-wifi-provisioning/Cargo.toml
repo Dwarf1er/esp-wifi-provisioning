@@ -3,10 +3,6 @@ name = "esp-wifi-provisioning"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = ["captive-portal"]
-captive-portal = []
-
 [dependencies]
 log           = { workspace = true }
 esp-idf-svc   = { workspace = true }
