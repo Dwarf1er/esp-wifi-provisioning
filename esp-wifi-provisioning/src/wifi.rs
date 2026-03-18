@@ -1,10 +1,8 @@
-use std::collections::HashMap;
-use std::thread;
-use std::time::Duration;
-
 use esp_idf_svc::wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi};
+use std::thread;
+use std::time::{Duration, Instant};
 
-use crate::error::ProvisioningError;
+use crate::error::{ConnectionFailureCause, ProvisioningError};
 use crate::nvs::StoredCredentials;
 
 #[derive(Debug, Clone)]
@@ -13,6 +11,24 @@ pub struct RetryConfig {
     pub connect_timeout: Duration,
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
+}
+
+impl RetryConfig {
+    /// Validates the config, returning an error message if any field is
+    /// out of range. Called by [`Provisioner::provision`] before the first
+    /// connection attempt so misconfiguration is caught early.
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.max_attempts == 0 {
+            return Err("max_attempts must be at least 1");
+        }
+        if self.connect_timeout.is_zero() {
+            return Err("connect_timeout must be greater than zero");
+        }
+        if self.initial_backoff.is_zero() {
+            return Err("initial_backoff must be greater than zero");
+        }
+        Ok(())
+    }
 }
 
 impl Default for RetryConfig {
@@ -27,16 +43,16 @@ impl Default for RetryConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct ScannedNetwork {
+pub(crate) struct ScannedNetwork {
     pub ssid: String,
     pub rssi: i8,
     pub auth_method: AuthMethod,
 }
 
-pub fn scan_networks(
+pub(crate) fn scan_networks(
     wifi: &mut BlockingWifi<EspWifi<'_>>,
 ) -> Result<Vec<ScannedNetwork>, ProvisioningError> {
-    let mut best: HashMap<String, ScannedNetwork> = HashMap::new();
+    let mut networks: Vec<ScannedNetwork> = Vec::new();
 
     for ap in wifi
         .wifi_mut()
@@ -47,38 +63,29 @@ pub fn scan_networks(
             continue;
         }
 
-        let ssid = ap.ssid.as_str().to_string();
+        let ssid = ap.ssid.as_str();
         let rssi = ap.signal_strength;
         let auth = ap.auth_method.unwrap_or(AuthMethod::None);
 
-        match best.get_mut(&ssid) {
-            Some(existing) => {
-                if rssi > existing.rssi {
-                    existing.rssi = rssi;
-                    existing.auth_method = auth;
-                }
+        if let Some(existing) = networks.iter_mut().find(|n| n.ssid == ssid) {
+            if rssi > existing.rssi {
+                existing.rssi = rssi;
+                existing.auth_method = auth;
             }
-            None => {
-                best.insert(
-                    ssid.clone(),
-                    ScannedNetwork {
-                        ssid,
-                        rssi,
-                        auth_method: auth,
-                    },
-                );
-            }
+        } else {
+            networks.push(ScannedNetwork {
+                ssid: ssid.to_string(),
+                rssi,
+                auth_method: auth,
+            });
         }
     }
 
-    let mut networks: Vec<ScannedNetwork> = best.into_values().collect();
-
     networks.sort_unstable_by(|a, b| b.rssi.cmp(&a.rssi));
-
     Ok(networks)
 }
 
-pub fn connect_with_retry(
+pub(crate) fn connect_with_retry(
     wifi: &mut BlockingWifi<EspWifi<'_>>,
     creds: &StoredCredentials,
     config: &RetryConfig,
@@ -114,35 +121,52 @@ pub fn connect_with_retry(
     for attempt in 1..=config.max_attempts {
         log::info!("WiFi connect attempt {}/{}", attempt, config.max_attempts);
 
-        match try_connect(wifi) {
+        match try_connect(wifi, config.connect_timeout) {
             Ok(()) => {
-                log::info!("WiFi connected on attempt {}", attempt);
+                log::info!("WiFi connected");
                 return Ok(());
             }
-            Err(e) => {
-                log::warn!("Attempt {} failed: {}", attempt, e);
-                if attempt < config.max_attempts {
-                    log::info!("Backing off for {}ms", backoff.as_millis());
-                    thread::sleep(backoff);
-                    backoff = (backoff * 2).min(config.max_backoff);
+            Err(cause) => {
+                log::warn!("Connection failed: {:?}", cause);
+
+                if attempt == config.max_attempts {
+                    return Err(ProvisioningError::ConnectionFailed {
+                        attempts: attempt,
+                        cause,
+                    });
                 }
+
+                log::info!("Retrying in {} ms", backoff.as_millis());
+                thread::sleep(backoff);
+                backoff = (backoff * 2).min(config.max_backoff);
             }
         }
     }
 
-    Err(ProvisioningError::ConnectionFailed {
-        attempts: config.max_attempts,
-        cause: crate::error::ConnectionFailureCause::DriverError(
-            "exhausted all connection attempts".into(),
-        ),
-    })
+    unreachable!()
 }
 
-fn try_connect(wifi: &mut BlockingWifi<EspWifi<'_>>) -> Result<(), ProvisioningError> {
+fn try_connect(
+    wifi: &mut BlockingWifi<EspWifi<'_>>,
+    timeout: Duration,
+) -> Result<(), ConnectionFailureCause> {
     let _ = wifi.disconnect();
+
     wifi.connect()
-        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
-    wifi.wait_netif_up()
-        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
-    Ok(())
+        .map_err(|e| ConnectionFailureCause::DriverError(e.into()))?;
+
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if wifi.is_connected().unwrap_or(false) {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            let _ = wifi.disconnect();
+            return Err(ConnectionFailureCause::Timeout);
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
 }

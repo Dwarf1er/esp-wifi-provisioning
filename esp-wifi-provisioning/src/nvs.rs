@@ -6,14 +6,16 @@ const NVS_NAMESPACE: &str = "wifi_prov";
 const KEY_SSID: &str = "ssid";
 const KEY_PASSWORD: &str = "password";
 const KEY_AUTH_METHOD: &str = "auth_method";
-pub(crate) const MAX_SSID_LEN: usize = 32;
-pub(crate) const MAX_PASS_LEN: usize = 64;
+
+pub(crate) const SSID_LEN_MAX: usize = 32;
+pub(crate) const WPA_PASS_LEN_MAX: usize = 63;
+pub(crate) const WPA_PASS_LEN_MIN: usize = 8;
 
 #[derive(Clone)]
-pub struct StoredCredentials {
-    pub ssid: String,
-    pub password: String,
-    pub auth_method: AuthMethod,
+pub(crate) struct StoredCredentials {
+    pub(crate) ssid: String,
+    pub(crate) password: String,
+    pub(crate) auth_method: AuthMethod,
 }
 
 impl std::fmt::Debug for StoredCredentials {
@@ -25,26 +27,41 @@ impl std::fmt::Debug for StoredCredentials {
     }
 }
 
+/// Opens the NVS namespace, returning `Ok(None)` if it doesn't exist yet
+/// (normal on first boot). Any other error is returned as `NvsAccess`.
+///
+/// `save_credentials` and `clear_credentials` open with `read_write: true`,
+/// which creates the namespace if absent — `NOT_FOUND` should never fire
+/// for them. Only `load_credentials` uses `read_write: false` and needs the
+/// `None` path.
 fn open_nvs(
     partition: EspNvsPartition<NvsDefault>,
     read_write: bool,
-) -> Result<EspNvs<NvsDefault>, ProvisioningError> {
-    EspNvs::new(partition, NVS_NAMESPACE, read_write)
-        .map_err(|e| ProvisioningError::NvsAccess(e.into()))
+) -> Result<Option<EspNvs<NvsDefault>>, ProvisioningError> {
+    match EspNvs::new(partition, NVS_NAMESPACE, read_write) {
+        Ok(nvs) => Ok(Some(nvs)),
+        Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_NVS_NOT_FOUND => Ok(None),
+        Err(e) => Err(ProvisioningError::NvsAccess(e.into())),
+    }
 }
 
 pub(crate) fn load_credentials(
     partition: EspNvsPartition<NvsDefault>,
 ) -> Result<Option<StoredCredentials>, ProvisioningError> {
-    let nvs = open_nvs(partition, false)?;
+    let nvs = match open_nvs(partition, false)? {
+        Some(nvs) => nvs,
+        None => return Ok(None),
+    };
 
     // Buffers sized for the max value length plus NVS's required null terminator.
-    let mut ssid_buf = [0u8; MAX_SSID_LEN + 1];
-    let mut pass_buf = [0u8; MAX_PASS_LEN + 1];
+    let mut ssid_buf = [0u8; SSID_LEN_MAX + 1];
+    let mut pass_buf = [0u8; WPA_PASS_LEN_MAX + 1];
 
-    let ssid_opt = nvs
-        .get_str(KEY_SSID, &mut ssid_buf)
-        .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;
+    let ssid_opt = match nvs.get_str(KEY_SSID, &mut ssid_buf) {
+        Ok(v) => v,
+        Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_NVS_NOT_FOUND => return Ok(None),
+        Err(e) => return Err(ProvisioningError::NvsAccess(e.into())),
+    };
 
     let password = match nvs.get_str(KEY_PASSWORD, &mut pass_buf) {
         Ok(Some(p)) => p.to_string(),
@@ -67,14 +84,16 @@ pub(crate) fn save_credentials(
     partition: EspNvsPartition<NvsDefault>,
     creds: &StoredCredentials,
 ) -> Result<(), ProvisioningError> {
-    if creds.ssid.is_empty() || creds.ssid.len() > MAX_SSID_LEN {
+    if creds.ssid.is_empty() || creds.ssid.len() > SSID_LEN_MAX {
         return Err(ProvisioningError::InvalidCredentials);
     }
-    if creds.password.len() > MAX_PASS_LEN {
+    if creds.password.len() > WPA_PASS_LEN_MAX {
         return Err(ProvisioningError::InvalidCredentials);
     }
 
-    let mut nvs = open_nvs(partition, true)?;
+    let mut nvs = open_nvs(partition, true)?.ok_or_else(|| {
+        ProvisioningError::NvsAccess("namespace not found after write open".into())
+    })?;
 
     nvs.set_str(KEY_SSID, &creds.ssid)
         .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;
@@ -96,7 +115,9 @@ pub(crate) fn save_credentials(
 pub(crate) fn clear_credentials(
     partition: EspNvsPartition<NvsDefault>,
 ) -> Result<(), ProvisioningError> {
-    let mut nvs = open_nvs(partition, true)?;
+    let mut nvs = open_nvs(partition, true)?.ok_or_else(|| {
+        ProvisioningError::NvsAccess("namespace not found after write open".into())
+    })?;
 
     nvs.remove(KEY_SSID)
         .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;

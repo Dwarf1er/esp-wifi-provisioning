@@ -30,7 +30,8 @@
             <div>
                 <label for="ssid">Network name (SSID)</label>
                 <input id="ssid" type="text" placeholder="e.g. MyHomeNetwork" autocomplete="off" autocorrect="off"
-                    spellcheck="false" aria-describedby="status" />
+                    spellcheck="false" aria-describedby="ssid-hint status" />
+                <span id="ssid-hint" class="pass-hint" aria-live="polite"></span>
                 <label for="pass">Password</label>
                 <div class="pass-wrap">
                     <input id="pass" type="password" placeholder="Leave blank for open networks"

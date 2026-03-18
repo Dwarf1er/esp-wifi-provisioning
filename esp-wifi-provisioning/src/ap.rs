@@ -12,38 +12,46 @@ use esp_idf_svc::wifi::{
 };
 
 use crate::error::{BoxError, ProvisioningError};
-use crate::nvs::{MAX_PASS_LEN, MAX_SSID_LEN, StoredCredentials};
+use crate::nvs::{SSID_LEN_MAX, StoredCredentials, WPA_PASS_LEN_MAX, WPA_PASS_LEN_MIN};
 use crate::portal::{index_html, networks_json};
 
-const MAX_BODY_SIZE: usize = MAX_SSID_LEN + MAX_PASS_LEN + 2;
-const WPA_PASS_MIN: usize = 8;
-const WPA_PASS_MAX: usize = 63;
+const MAX_BODY_SIZE: usize = SSID_LEN_MAX + WPA_PASS_LEN_MAX + 2;
 static NETIF_KEY_CTR: AtomicU32 = AtomicU32::new(0);
 
-#[derive(Clone)]
-pub struct ApConfig {
-    pub ssid: String,
-    pub password: Option<String>,
-    pub channel: u8,
-    pub ip: Ipv4Addr,
+#[derive(Clone, Debug)]
+pub enum ApSecurity {
+    /// No password — any device can join the setup AP.
+    ///
+    /// **Note:** credentials entered in the captive portal are transmitted
+    /// over plain HTTP (no TLS). This is an inherent limitation of the
+    /// captive portal model on embedded devices. Prefer [`ApSecurity::Wpa2`]
+    /// in production to at least restrict who can reach the portal at all.
+    Open,
+    /// WPA2-Personal with the given password (8–63 characters).
+    Wpa2(String),
 }
 
-impl std::fmt::Debug for ApConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ApConfig")
-            .field("ssid", &self.ssid)
-            .field("password", &self.password.as_ref().map(|_| "[redacted]"))
-            .field("channel", &self.channel)
-            .field("ip", &self.ip)
-            .finish()
-    }
+#[derive(Clone, Debug)]
+pub struct ApConfig {
+    pub ssid: String,
+    pub security: ApSecurity,
+    pub channel: u8,
+    /// The IP address assigned to the ESP32 on the setup AP.
+    ///
+    /// A /24 subnet is always used (`mask = 24`). Clients receive addresses
+    /// in the same /24 via DHCP. If you change this, make sure the chosen
+    /// address is a valid gateway for a /24 network (e.g. `x.x.x.1`).
+    pub ip: Ipv4Addr,
 }
 
 impl Default for ApConfig {
     fn default() -> Self {
         Self {
             ssid: "ESP32-Setup".into(),
-            password: None,
+            // Open by default for out-of-box ease. See ApSecurity::Open for
+            // the security implications. Switch to ApSecurity::Wpa2 in
+            // production builds.
+            security: ApSecurity::Open,
             channel: 6,
             ip: Ipv4Addr::new(192, 168, 4, 1),
         }
@@ -78,6 +86,7 @@ pub fn run_portal(
     let key_n = NETIF_KEY_CTR.fetch_add(1, Ordering::Relaxed);
     let key = format!("AP_{key_n}");
     log::info!("KEY: {key}");
+
     let ap_netif = EspNetif::new_with_conf(&NetifConfiguration {
         ip_configuration: Some(ipv4::Configuration::Router(ipv4::RouterConfiguration {
             subnet: ipv4::Subnet {
@@ -109,7 +118,11 @@ pub fn run_portal(
         ap_config.ip,
     );
 
+    // _dns must be kept alive for the entire lifetime of the portal. Dropping
+    // it signals the DNS thread to stop, which would break captive-portal
+    // detection on all platforms.
     let _dns = Some(crate::dns::DnsServer::start(ap_config.ip)?);
+
     let (tx, rx) = mpsc::channel::<StoredCredentials>();
     let networks_clone = Arc::clone(&networks_json_str);
     let last_error_json: Arc<str> = match last_error {
@@ -179,6 +192,10 @@ pub fn run_portal(
                     body.extend_from_slice(&buf[..n]);
                     if body.len() > MAX_BODY_SIZE {
                         oversize = true;
+                        // Drain the remaining request body before sending a
+                        // response. Some HTTP stacks misbehave if the server
+                        // closes the connection while the client is still
+                        // sending, so we consume any remaining bytes first.
                         drain_request(&mut req);
                         break;
                     }
@@ -218,7 +235,14 @@ pub fn run_portal(
                 log::info!("Credentials received for SSID '{}'", creds.ssid);
                 drop(server);
                 drop(_dns);
+
+                // Give the HTTP response time to flush before the TCP stack
+                // is torn down by wifi.stop(). Without this delay, the
+                // {"success":true} response may never reach the browser,
+                // causing the UI to show an error even though provisioning
+                // succeeded.
                 thread::sleep(std::time::Duration::from_millis(500));
+
                 wifi.stop()
                     .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
                 return Ok(creds);
@@ -234,14 +258,14 @@ pub fn run_portal(
 }
 
 fn build_ap_config(cfg: &ApConfig) -> Result<Configuration, ProvisioningError> {
-    let (auth, password) = match &cfg.password {
-        Some(p) if !p.is_empty() => (
+    let (auth, password) = match &cfg.security {
+        ApSecurity::Open => (AuthMethod::None, Default::default()),
+        ApSecurity::Wpa2(p) => (
             AuthMethod::WPA2Personal,
             p.as_str()
                 .try_into()
                 .map_err(|_| ProvisioningError::InvalidCredentials)?,
         ),
-        _ => (AuthMethod::None, Default::default()),
     };
 
     Ok(Configuration::AccessPoint(AccessPointConfiguration {
@@ -257,27 +281,39 @@ fn build_ap_config(cfg: &ApConfig) -> Result<Configuration, ProvisioningError> {
     }))
 }
 
-fn parse_credentials(body: &[u8]) -> Result<StoredCredentials, &'static str> {
-    let s = std::str::from_utf8(body).map_err(|_| "Invalid UTF-8")?;
+fn parse_credentials(body: &[u8]) -> Result<StoredCredentials, String> {
+    let s = std::str::from_utf8(body).map_err(|_| "Invalid UTF-8".to_string())?;
     let (ssid, password) = s.split_once('\n').unwrap_or((s, ""));
     let ssid = ssid.trim().to_string();
-    let password = password.trim_end_matches(['\r', '\n']).to_string();
+    let password = password.trim_matches(['\r', '\n']).to_string();
 
     if ssid.is_empty() {
-        return Err("SSID cannot be empty");
+        return Err("SSID cannot be empty".to_string());
     }
-    if ssid.len() > MAX_SSID_LEN {
-        return Err("SSID is too long (max 32 characters)");
+    if ssid.len() > SSID_LEN_MAX {
+        return Err(format!(
+            "SSID is too long ({} characters, max {})",
+            ssid.len(),
+            SSID_LEN_MAX
+        ));
     }
 
     let auth_method = if password.is_empty() {
         AuthMethod::None
     } else {
-        if password.len() < WPA_PASS_MIN {
-            return Err("Password must be at least 8 characters for a secured network");
+        if password.len() < WPA_PASS_LEN_MIN {
+            return Err(format!(
+                "Password must be at least {} characters ({} provided)",
+                WPA_PASS_LEN_MIN,
+                password.len()
+            ));
         }
-        if password.len() > WPA_PASS_MAX {
-            return Err("Password must be 63 characters or fewer");
+        if password.len() > WPA_PASS_LEN_MAX {
+            return Err(format!(
+                "Password must be {} characters or fewer ({} provided)",
+                WPA_PASS_LEN_MAX,
+                password.len()
+            ));
         }
         AuthMethod::WPA2Personal
     };

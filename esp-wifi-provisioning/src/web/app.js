@@ -27,8 +27,9 @@ const DEV_NETWORKS = [{
 ];
 // END_DEV
 
-const WPA_PASS_MIN = 8;
-const WPA_PASS_MAX = 63;
+const SSID_LEN_MAX = 32;
+const WPA_PASS_LEN_MIN = 8;
+const WPA_PASS_LEN_MAX = 63;
 
 const netDiv = document.getElementById('networks');
 const ssidIn = document.getElementById('ssid');
@@ -41,6 +42,7 @@ const statusEl = document.getElementById('status');
 const spinner = document.getElementById('spinner');
 const rescanBtn = document.getElementById('rescan-btn');
 const announceEl = document.getElementById('network-announce');
+const ssidHint = document.getElementById('ssid-hint');
 const passHint = document.getElementById('pass-hint');
 
 togglePass.addEventListener("click", () => {
@@ -57,7 +59,25 @@ togglePass.addEventListener("click", () => {
     togglePass.setAttribute("aria-pressed", hidden ? "true" : "false");
 });
 
+ssidIn.addEventListener("input", () => validateSsid(false));
 passIn.addEventListener("input", () => validatePass(false));
+
+function validateSsid(isFinal) {
+    const val = ssidIn.value.trim();
+
+    if (val.length === 0) {
+        setSsidHint('', '');
+        return true;
+    }
+
+    if (val.length > SSID_LEN_MAX) {
+        setSsidHint(`Network name is too long (max ${SSID_MAX} characters)`, 'err');
+        return false;
+    }
+
+    setSsidHint('', '');
+    return true;
+}
 
 function validatePass(isFinal) {
     const val = passIn.value;
@@ -67,20 +87,25 @@ function validatePass(isFinal) {
         return true;
     }
 
-    if (val.length < WPA_PASS_MIN) {
-        const remaining = WPA_PASS_MIN - val.length;
+    if (val.length < WPA_PASS_LEN_MIN) {
+        const remaining = WPA_PASS_LEN_MIN - val.length;
         const charWord  = remaining === 1 ? 'character' : 'characters';
-        setPassHint(`WPA password needs ${remaining} more ${charWord} (min ${WPA_PASS_MIN})`, 'err');
-        return isFinal ? false : false;
+        setPassHint(`WPA password needs ${remaining} more ${charWord} (min ${WPA_PASS_LEN_MIN})`, 'err');
+        return false
     }
 
-    if (val.length > WPA_PASS_MAX) {
-        setPassHint(`Password is too long (max ${WPA_PASS_MAX} characters)`, 'err');
+    if (val.length > WPA_PASS_LEN_MAX) {
+        setPassHint(`Password is too long (max ${WPA_PASS_LEN_MAX} characters)`, 'err');
         return false;
     }
 
-    setPassHint(`Password length looks good (${val.length}/${WPA_PASS_MAX})`, 'ok');
+    setPassHint(`Password length between 8 and 63: (${val.length}/${WPA_PASS_LEN_MAX})`, 'ok');
     return true;
+}
+
+function setSsidHint(msg, cls) {
+    ssidHint.textContent = msg;
+    ssidHint.className   = `pass-hint${cls ? ` pass-hint--${cls}` : ''}`;
 }
 
 function setPassHint(msg, cls) {
@@ -140,8 +165,15 @@ function renderNetworks(networks) {
             el.setAttribute('aria-selected', 'true');
             netDiv.setAttribute('aria-activedescendant', id);
             ssidIn.value = net.ssid;
+            setSsidHint("", "");
             announceEl.textContent = `Selected: ${net.ssid}`;
-            validatePass(false);
+
+            if (!net.secure) {
+                passIn.value = "";
+                setPassHint("");
+            } else {
+                validatePass(false);
+            }
             if (jumpFocus) passIn.focus();
         }
 
@@ -175,6 +207,9 @@ async function loadNetworks() {
     rescanBtn.disabled = true;
     rescanBtn.textContent = '↺ Scanning…';
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15_000);
+
     try {
         const r = await fetch('/networks');
         if (!r.ok) throw new Error('non-200');
@@ -201,8 +236,8 @@ async function handleSubmit() {
     const ssid = ssidIn.value.trim();
     const pass = passIn.value;
 
-    if (!ssid) {
-        setStatus('Please enter an SSID.', 'err');
+    if (!validateSsid(true)) {
+        ssidIn.focus();
         return;
     }
 
@@ -212,6 +247,7 @@ async function handleSubmit() {
     }
 
     btn.disabled = true;
+    rescanBtn.disabled = true;
     spinner.style.display = 'block';
     setStatus('Connecting…', '');
 

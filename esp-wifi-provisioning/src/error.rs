@@ -20,6 +20,13 @@ pub enum ProvisioningError {
     ApStart(BoxError),
     HttpServer(BoxError),
     InvalidCredentials,
+    InvalidConfig(BoxError),
+}
+
+impl ProvisioningError {
+    pub fn is_connection_failure(&self) -> bool {
+        matches!(self, Self::ConnectionFailed { .. })
+    }
 }
 
 impl fmt::Display for ProvisioningError {
@@ -28,6 +35,10 @@ impl fmt::Display for ProvisioningError {
             Self::NvsAccess(e) => write!(f, "NVS access error: {e}"),
             Self::NvsCorrupt => write!(f, "stored WiFi credentials are corrupt"),
             Self::WifiDriver(e) => write!(f, "WiFi driver error: {e}"),
+            Self::ApStart(e) => write!(f, "failed to start soft-AP: {e}"),
+            Self::HttpServer(e) => write!(f, "HTTP server error: {e}"),
+            Self::InvalidCredentials => write!(f, "submitted credentials are invalid"),
+            Self::InvalidConfig(e) => write!(f, "invalid configuration: {e}"),
             Self::ConnectionFailed { attempts, cause } => match cause {
                 ConnectionFailureCause::Timeout => {
                     write!(f, "WiFi connection timed out after {attempts} attempt(s)")
@@ -36,9 +47,6 @@ impl fmt::Display for ProvisioningError {
                     write!(f, "WiFi connection failed after {attempts} attempt(s): {e}")
                 }
             },
-            Self::ApStart(e) => write!(f, "failed to start soft-AP: {e}"),
-            Self::HttpServer(e) => write!(f, "HTTP server error: {e}"),
-            Self::InvalidCredentials => write!(f, "submitted credentials are invalid"),
         }
     }
 }

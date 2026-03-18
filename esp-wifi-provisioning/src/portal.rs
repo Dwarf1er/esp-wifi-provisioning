@@ -6,6 +6,16 @@ pub(crate) fn index_html() -> &'static str {
     INDEX_HTML
 }
 
+/// Serialises a slice of scanned networks to a JSON array string.
+///
+/// JSON is hand-rolled here rather than using `serde_json` for two reasons:
+///   1. Binary size: `serde` and `serde_json` add meaningful overhead on an
+///      ESP32 where flash is small.
+///   2. No additional dependencies: this crate intentionally keeps its dep
+///      tree minimal.
+///
+/// If the shape of `ScannedNetwork` changes, this function must be updated
+/// to match.
 pub(crate) fn networks_json(networks: &[crate::wifi::ScannedNetwork]) -> String {
     use std::fmt::Write;
     let mut out = String::from("[");
@@ -14,10 +24,7 @@ pub(crate) fn networks_json(networks: &[crate::wifi::ScannedNetwork]) -> String 
             out.push(',');
         }
 
-        let secure = match n.auth_method {
-            AuthMethod::None => false,
-            _ => true,
-        };
+        let secure = !matches!(n.auth_method, AuthMethod::None);
 
         write!(
             out,

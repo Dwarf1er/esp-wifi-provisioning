@@ -81,10 +81,17 @@ fn run(ap_ip: Ipv4Addr, stop: mpsc::Receiver<()>) {
 /// Builds a DNS response that resolves any A record query to `ip`.
 /// Returns None if the query is malformed.
 fn build_response(query: &[u8], ip: Ipv4Addr) -> Option<Vec<u8>> {
-    if query.len() < 12 || query.len() > 512 {
+    if query.len() < 12 {
         return None;
     }
 
+    let qname_end = parse_qname_end(query, 12)?;
+
+    // After the QNAME we expect QTYPE (2 bytes) + QCLASS (2 bytes).
+    let question_end = qname_end.checked_add(4)?;
+    if question_end > query.len() {
+        return None;
+    }
     let mut resp = Vec::with_capacity(query.len() + 16);
 
     // Header (12 bytes)
@@ -122,6 +129,27 @@ fn build_response(query: &[u8], ip: Ipv4Addr) -> Option<Vec<u8>> {
     Some(resp)
 }
 
+/// Walks a DNS QNAME starting at `offset` in `buf` and returns the index
+/// of the byte immediately after the terminating zero-length label.
+/// Returns `None` if the QNAME is malformed or runs past the end of `buf`.
+fn parse_qname_end(buf: &[u8], mut offset: usize) -> Option<usize> {
+    loop {
+        let len = *buf.get(offset)? as usize;
+        if len == 0 {
+            return Some(offset + 1);
+        }
+        // DNS compression pointers (top two bits set) are not expected in
+        // a query's QNAME, but guard against them to avoid an infinite loop.
+        if len & 0xc0 == 0xc0 {
+            return None;
+        }
+        offset = offset.checked_add(1)?.checked_add(len)?;
+        if offset > buf.len() {
+            return None;
+        }
+    }
+}
+
 /// Registers OS-specific captive portal detection endpoints on the provided
 /// server. Each OS probes different URLs to detect internet connectivity —
 /// responding correctly here triggers the "Sign in to network" popup.
@@ -149,6 +177,12 @@ pub fn register_captive_portal_handlers(
     )?;
 
     // Android
+    let url = portal_url.clone();
+    server.fn_handler(
+        "/gen_204",
+        esp_idf_svc::http::Method::Get,
+        move |req| -> Result<(), BoxError> { redirect(req, &url) },
+    )?;
     let url = portal_url.clone();
     server.fn_handler(
         "/generate_204",
@@ -180,7 +214,8 @@ pub fn register_captive_portal_handlers(
         move |req| -> Result<(), BoxError> { redirect(req, &url) },
     )?;
 
-    // Firefox (200 response)
+    // Firefox (200 response), expects a non-empty response that doesn't contain the word "succes"
+    // so "ok" is an intentional response
     server.fn_handler(
         "/success.txt",
         esp_idf_svc::http::Method::Get,
