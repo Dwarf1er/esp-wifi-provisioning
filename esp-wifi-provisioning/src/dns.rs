@@ -8,7 +8,6 @@ use esp_idf_svc::io::Write;
 use crate::error::{BoxError, ProvisioningError};
 
 pub struct DnsServer {
-    // Dropping this sender signals the DNS thread to stop
     _stop_tx: mpsc::Sender<()>,
 }
 
@@ -19,7 +18,10 @@ impl DnsServer {
         thread::Builder::new()
             .stack_size(4096)
             .spawn(move || run(ip, stop_rx))
-            .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
+            .map_err(|e| {
+                log::error!("Failed to spawn DNS thread: {e}");
+                ProvisioningError::HttpServer(Box::new(e))
+            })?;
 
         Ok(Self { _stop_tx: stop_tx })
     }
@@ -78,68 +80,65 @@ fn run(ap_ip: Ipv4Addr, stop: mpsc::Receiver<()>) {
     log::info!("DNS server stopped");
 }
 
-/// Builds a DNS response that resolves any A record query to `ip`.
-/// Returns None if the query is malformed.
 fn build_response(query: &[u8], ip: Ipv4Addr) -> Option<Vec<u8>> {
     if query.len() < 12 {
         return None;
     }
 
     let qname_end = parse_qname_end(query, 12)?;
-
-    // After the QNAME we expect QTYPE (2 bytes) + QCLASS (2 bytes).
-    let question_end = qname_end.checked_add(4)?;
+    let question_end = qname_end.checked_add(4)?; // QTYPE (2) + QCLASS (2)
     if question_end > query.len() {
         return None;
     }
-    let mut resp = Vec::with_capacity(query.len() + 16);
+
+    let qtype = u16::from_be_bytes([query[qname_end], query[qname_end + 1]]);
+    let is_a = qtype == 1; // QTYPE A
+
+    let mut resp = Vec::with_capacity(question_end + 16);
 
     // Header (12 bytes)
-    resp.push(query[0]); // Transaction ID
-    resp.push(query[1]);
-    resp.push(0x81); // Flags: QR=1 (response), AA=1 (authoritative)
-    resp.push(0x80); // RCODE=0 (no error)
-    resp.push(query[4]); // QDCOUNT — echo question count
-    resp.push(query[5]);
-    resp.push(0x00); // ANCOUNT — 1 answer
-    resp.push(0x01);
-    resp.push(0x00); // NSCOUNT — zero
+    resp.push(query[0]);
+    resp.push(query[1]); // Transaction ID
+    resp.push(0x81); // QR=1, AA=1
+    resp.push(0x80); // RCODE=0
+    resp.push(query[4]);
+    resp.push(query[5]); // QDCOUNT (echo)
     resp.push(0x00);
-    resp.push(0x00); // ARCOUNT — zero
+    resp.push(if is_a { 0x01 } else { 0x00 }); // ANCOUNT
     resp.push(0x00);
+    resp.push(0x00); // NSCOUNT
+    resp.push(0x00);
+    resp.push(0x00); // ARCOUNT
 
-    // Question section — copy verbatim from query
-    resp.extend_from_slice(&query[12..]);
+    // Question section — only the question, not trailing additional sections
+    resp.extend_from_slice(&query[12..question_end]);
 
-    // Answer section
-    resp.push(0xc0); // Name — pointer to offset 12 (0xc00c)
-    resp.push(0x0c);
-    resp.push(0x00); // Type A
-    resp.push(0x01);
-    resp.push(0x00); // Class IN
-    resp.push(0x01);
-    resp.push(0x00); // TTL — 60 seconds
-    resp.push(0x00);
-    resp.push(0x00);
-    resp.push(0x3c);
-    resp.push(0x00); // RDLENGTH — 4 bytes
-    resp.push(0x04);
-    resp.extend_from_slice(&ip.octets()); // RDATA — the AP IP
+    // Answer — only for A queries
+    if is_a {
+        resp.push(0xc0);
+        resp.push(0x0c); // Name pointer → offset 12
+        resp.push(0x00);
+        resp.push(0x01); // Type A
+        resp.push(0x00);
+        resp.push(0x01); // Class IN
+        resp.push(0x00);
+        resp.push(0x00);
+        resp.push(0x00);
+        resp.push(0x3c); // TTL 60s
+        resp.push(0x00);
+        resp.push(0x04); // RDLENGTH 4
+        resp.extend_from_slice(&ip.octets());
+    }
 
     Some(resp)
 }
 
-/// Walks a DNS QNAME starting at `offset` in `buf` and returns the index
-/// of the byte immediately after the terminating zero-length label.
-/// Returns `None` if the QNAME is malformed or runs past the end of `buf`.
 fn parse_qname_end(buf: &[u8], mut offset: usize) -> Option<usize> {
     loop {
         let len = *buf.get(offset)? as usize;
         if len == 0 {
             return Some(offset + 1);
         }
-        // DNS compression pointers (top two bits set) are not expected in
-        // a query's QNAME, but guard against them to avoid an infinite loop.
         if len & 0xc0 == 0xc0 {
             return None;
         }
@@ -150,26 +149,20 @@ fn parse_qname_end(buf: &[u8], mut offset: usize) -> Option<usize> {
     }
 }
 
-/// Registers OS-specific captive portal detection endpoints on the provided
-/// server. Each OS probes different URLs to detect internet connectivity —
-/// responding correctly here triggers the "Sign in to network" popup.
-///
-/// NOTE: iOS Safari will NOT show the popup if any response body contains
-/// the word "Success" — avoid it in all response bodies.
 pub fn register_captive_portal_handlers(
     server: &mut EspHttpServer,
     ip: Ipv4Addr,
 ) -> Result<(), BoxError> {
     let portal_url = format!("http://{ip}");
 
-    // Windows 11 — expects a redirect to http://logout.net specifically
+    // Windows 11
     server.fn_handler(
         "/connecttest.txt",
         esp_idf_svc::http::Method::Get,
         |req| -> Result<(), BoxError> { redirect(req, "http://logout.net") },
     )?;
 
-    // Windows 10 — 404 stops it from hammering the device
+    // Windows 10, 404 prevents it from hammering the device
     server.fn_handler(
         "/wpad.dat",
         esp_idf_svc::http::Method::Get,
@@ -214,8 +207,7 @@ pub fn register_captive_portal_handlers(
         move |req| -> Result<(), BoxError> { redirect(req, &url) },
     )?;
 
-    // Firefox (200 response), expects a non-empty response that doesn't contain the word "succes"
-    // so "ok" is an intentional response
+    // Firefox (200), must be non-empty and must NOT contain "success"
     server.fn_handler(
         "/success.txt",
         esp_idf_svc::http::Method::Get,
@@ -225,7 +217,7 @@ pub fn register_captive_portal_handlers(
         },
     )?;
 
-    // Windows
+    // Windows NCSI
     let url = portal_url.clone();
     server.fn_handler(
         "/ncsi.txt",
@@ -233,7 +225,7 @@ pub fn register_captive_portal_handlers(
         move |req| -> Result<(), BoxError> { redirect(req, &url) },
     )?;
 
-    // Favicon — 404 to avoid unnecessary traffic
+    // Favicon, 404 to suppress unnecessary traffic
     server.fn_handler(
         "/favicon.ico",
         esp_idf_svc::http::Method::Get,

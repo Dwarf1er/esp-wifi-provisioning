@@ -27,13 +27,6 @@ impl std::fmt::Debug for StoredCredentials {
     }
 }
 
-/// Opens the NVS namespace, returning `Ok(None)` if it doesn't exist yet
-/// (normal on first boot). Any other error is returned as `NvsAccess`.
-///
-/// `save_credentials` and `clear_credentials` open with `read_write: true`,
-/// which creates the namespace if absent — `NOT_FOUND` should never fire
-/// for them. Only `load_credentials` uses `read_write: false` and needs the
-/// `None` path.
 fn open_nvs(
     partition: EspNvsPartition<NvsDefault>,
     read_write: bool,
@@ -41,7 +34,7 @@ fn open_nvs(
     match EspNvs::new(partition, NVS_NAMESPACE, read_write) {
         Ok(nvs) => Ok(Some(nvs)),
         Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_NVS_NOT_FOUND => Ok(None),
-        Err(e) => Err(ProvisioningError::NvsAccess(e.into())),
+        Err(e) => Err(ProvisioningError::NvsAccess(e)),
     }
 }
 
@@ -53,28 +46,41 @@ pub(crate) fn load_credentials(
         None => return Ok(None),
     };
 
-    // Buffers sized for the max value length plus NVS's required null terminator.
     let mut ssid_buf = [0u8; SSID_LEN_MAX + 1];
     let mut pass_buf = [0u8; WPA_PASS_LEN_MAX + 1];
 
-    let ssid_opt = match nvs.get_str(KEY_SSID, &mut ssid_buf) {
-        Ok(v) => v,
+    let ssid = match nvs.get_str(KEY_SSID, &mut ssid_buf) {
+        Ok(Some(s)) => s.to_string(),
+        Ok(None) => return Ok(None),
         Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_NVS_NOT_FOUND => return Ok(None),
-        Err(e) => return Err(ProvisioningError::NvsAccess(e.into())),
+        Err(e) => return Err(ProvisioningError::NvsAccess(e)),
+    };
+
+    let auth_method = match nvs.get_u8(KEY_AUTH_METHOD) {
+        Ok(Some(v)) => auth_method_from_u8(v)?,
+        Ok(None) => AuthMethod::WPA2Personal,
+        Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_NVS_NOT_FOUND => AuthMethod::WPA2Personal,
+        Err(e) => return Err(ProvisioningError::NvsAccess(e)),
     };
 
     let password = match nvs.get_str(KEY_PASSWORD, &mut pass_buf) {
         Ok(Some(p)) => p.to_string(),
-        Ok(None) | Err(_) => String::new(),
+        Ok(None) | Err(_) => {
+            if !matches!(auth_method, AuthMethod::None) {
+                log::warn!(
+                    "Stored credentials for '{}' have auth_method {:?} but no password \
+                     | treating as corrupt",
+                    ssid,
+                    auth_method
+                );
+                return Err(ProvisioningError::NvsCorrupt);
+            }
+            String::new()
+        }
     };
 
-    let auth_method = match nvs.get_u8(KEY_AUTH_METHOD) {
-        Ok(Some(v)) => auth_method_from_u8(v),
-        Ok(None) | Err(_) => AuthMethod::WPA2Personal,
-    };
-
-    Ok(ssid_opt.map(|ssid| StoredCredentials {
-        ssid: ssid.to_string(),
+    Ok(Some(StoredCredentials {
+        ssid,
         password,
         auth_method,
     }))
@@ -91,23 +97,24 @@ pub(crate) fn save_credentials(
         return Err(ProvisioningError::InvalidCredentials);
     }
 
-    let mut nvs = open_nvs(partition, true)?.ok_or_else(|| {
-        ProvisioningError::NvsAccess("namespace not found after write open".into())
-    })?;
+    let mut nvs = open_nvs(partition, true)?.ok_or_else(|| ProvisioningError::NvsCorrupt)?;
 
     nvs.set_str(KEY_SSID, &creds.ssid)
-        .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;
+        .map_err(ProvisioningError::NvsAccess)?;
 
     if creds.password.is_empty() {
-        nvs.remove(KEY_PASSWORD)
-            .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;
+        match nvs.remove(KEY_PASSWORD) {
+            Ok(_) => {}
+            Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_NVS_NOT_FOUND => {}
+            Err(e) => return Err(ProvisioningError::NvsAccess(e)),
+        }
     } else {
         nvs.set_str(KEY_PASSWORD, &creds.password)
-            .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;
+            .map_err(ProvisioningError::NvsAccess)?;
     }
 
     nvs.set_u8(KEY_AUTH_METHOD, auth_method_to_u8(creds.auth_method))
-        .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;
+        .map_err(ProvisioningError::NvsAccess)?;
 
     Ok(())
 }
@@ -115,17 +122,18 @@ pub(crate) fn save_credentials(
 pub(crate) fn clear_credentials(
     partition: EspNvsPartition<NvsDefault>,
 ) -> Result<(), ProvisioningError> {
-    let mut nvs = open_nvs(partition, true)?.ok_or_else(|| {
-        ProvisioningError::NvsAccess("namespace not found after write open".into())
-    })?;
+    let mut nvs = match open_nvs(partition, true)? {
+        Some(nvs) => nvs,
+        None => return Ok(()),
+    };
 
-    nvs.remove(KEY_SSID)
-        .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;
-    nvs.remove(KEY_PASSWORD)
-        .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;
-    nvs.remove(KEY_AUTH_METHOD)
-        .map_err(|e| ProvisioningError::NvsAccess(e.into()))?;
-
+    for key in [KEY_SSID, KEY_PASSWORD, KEY_AUTH_METHOD] {
+        match nvs.remove(key) {
+            Ok(_) => {}
+            Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_NVS_NOT_FOUND => {}
+            Err(e) => return Err(ProvisioningError::NvsAccess(e)),
+        }
+    }
     Ok(())
 }
 
@@ -148,20 +156,23 @@ fn auth_method_to_u8(m: AuthMethod) -> u8 {
     }
 }
 
-fn auth_method_from_u8(v: u8) -> AuthMethod {
+fn auth_method_from_u8(v: u8) -> Result<AuthMethod, ProvisioningError> {
     match v {
-        0 => AuthMethod::None,
-        1 => AuthMethod::WEP,
-        2 => AuthMethod::WPA,
-        3 => AuthMethod::WPA2Personal,
-        4 => AuthMethod::WPAWPA2Personal,
-        5 => AuthMethod::WPA2Enterprise,
-        6 => AuthMethod::WPA3Personal,
-        7 => AuthMethod::WPA2WPA3Personal,
-        8 => AuthMethod::WAPIPersonal,
+        0 => Ok(AuthMethod::None),
+        1 => Ok(AuthMethod::WEP),
+        2 => Ok(AuthMethod::WPA),
+        3 => Ok(AuthMethod::WPA2Personal),
+        4 => Ok(AuthMethod::WPAWPA2Personal),
+        5 => Ok(AuthMethod::WPA2Enterprise),
+        6 => Ok(AuthMethod::WPA3Personal),
+        7 => Ok(AuthMethod::WPA2WPA3Personal),
+        8 => Ok(AuthMethod::WAPIPersonal),
         _ => {
-            log::warn!("Unrecognised auth_method byte {v} in NVS, defaulting to WPA2Personal");
-            AuthMethod::WPA2Personal
+            log::warn!(
+                "Unrecognised auth_method byte {v} in NVS (written by newer firmware?), \
+                 falling back to WPA2Personal"
+            );
+            Ok(AuthMethod::WPA2Personal)
         }
     }
 }

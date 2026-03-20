@@ -48,6 +48,7 @@ fn strip_dev_block(src: &str, start_marker: &str, end_marker: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut skipping = false;
     let mut found_start = false;
+    let mut found_end = false;
 
     for line in src.lines() {
         let trimmed = line.trim_start();
@@ -59,6 +60,7 @@ fn strip_dev_block(src: &str, start_marker: &str, end_marker: &str) -> String {
         if skipping {
             if trimmed.starts_with(end_marker) {
                 skipping = false;
+                found_end = true;
             }
             continue;
         }
@@ -70,6 +72,12 @@ fn strip_dev_block(src: &str, start_marker: &str, end_marker: &str) -> String {
         !found_start || !skipping,
         "Found '{start_marker}' in app.js but no matching '{end_marker}' | \
          dev block is unterminated"
+    );
+
+    assert!(
+        found_end == found_start,
+        "Found '{end_marker}' in app.js but no matching '{start_marker}' | \
+         dev block start marker is missing"
     );
 
     out

@@ -20,15 +20,15 @@ static NETIF_KEY_CTR: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Debug)]
 pub enum ApSecurity {
-    /// No password — any device can join the setup AP.
-    ///
-    /// **Note:** credentials entered in the captive portal are transmitted
-    /// over plain HTTP (no TLS). This is an inherent limitation of the
-    /// captive portal model on embedded devices. Prefer [`ApSecurity::Wpa2`]
-    /// in production to at least restrict who can reach the portal at all.
     Open,
-    /// WPA2-Personal with the given password (8–63 characters).
+    Wep(String),
+    Wpa(String),
     Wpa2(String),
+    WpaWpa2(String),
+    Wpa2Enterprise,
+    Wpa3(String),
+    Wpa2Wpa3(String),
+    Wapi(String),
 }
 
 #[derive(Clone, Debug)]
@@ -36,11 +36,6 @@ pub struct ApConfig {
     pub ssid: String,
     pub security: ApSecurity,
     pub channel: u8,
-    /// The IP address assigned to the ESP32 on the setup AP.
-    ///
-    /// A /24 subnet is always used (`mask = 24`). Clients receive addresses
-    /// in the same /24 via DHCP. If you change this, make sure the chosen
-    /// address is a valid gateway for a /24 network (e.g. `x.x.x.1`).
     pub ip: Ipv4Addr,
 }
 
@@ -48,14 +43,15 @@ impl Default for ApConfig {
     fn default() -> Self {
         Self {
             ssid: "ESP32-Setup".into(),
-            // Open by default for out-of-box ease. See ApSecurity::Open for
-            // the security implications. Switch to ApSecurity::Wpa2 in
-            // production builds.
             security: ApSecurity::Open,
             channel: 6,
             ip: Ipv4Addr::new(192, 168, 4, 1),
         }
     }
+}
+
+fn http_err(e: impl std::error::Error + Send + Sync + 'static) -> ProvisioningError {
+    ProvisioningError::HttpServer(Box::new(e))
 }
 
 pub fn run_portal(
@@ -67,10 +63,9 @@ pub fn run_portal(
         auth_method: AuthMethod::None,
         ..Default::default()
     }))
-    .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+    .map_err(ProvisioningError::WifiDriver)?;
 
-    wifi.start()
-        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+    wifi.start().map_err(ProvisioningError::WifiDriver)?;
 
     let networks = crate::wifi::scan_networks(wifi).unwrap_or_else(|e| {
         log::warn!("Scan failed ({e}), network list will be empty");
@@ -78,14 +73,12 @@ pub fn run_portal(
     });
     log::info!("Scan found {} networks", networks.len());
 
-    wifi.stop()
-        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+    wifi.stop().map_err(ProvisioningError::WifiDriver)?;
 
     let networks_json_str: Arc<str> = networks_json(&networks).into();
 
     let key_n = NETIF_KEY_CTR.fetch_add(1, Ordering::Relaxed);
     let key = format!("AP_{key_n}");
-    log::info!("KEY: {key}");
 
     let ap_netif = EspNetif::new_with_conf(&NetifConfiguration {
         ip_configuration: Some(ipv4::Configuration::Router(ipv4::RouterConfiguration {
@@ -100,16 +93,15 @@ pub fn run_portal(
         key: key.as_str().try_into().unwrap(),
         ..NetifConfiguration::wifi_default_router()
     })
-    .map_err(|e| ProvisioningError::ApStart(e.into()))?;
+    .map_err(ProvisioningError::ApStart)?;
 
     wifi.wifi_mut()
         .swap_netif_ap(ap_netif)
-        .map_err(|e| ProvisioningError::ApStart(e.into()))?;
+        .map_err(ProvisioningError::ApStart)?;
 
     wifi.set_configuration(&build_ap_config(ap_config)?)
-        .map_err(|e| ProvisioningError::ApStart(e.into()))?;
-    wifi.start()
-        .map_err(|e| ProvisioningError::ApStart(e.into()))?;
+        .map_err(ProvisioningError::ApStart)?;
+    wifi.start().map_err(ProvisioningError::ApStart)?;
 
     log::info!(
         "Soft-AP '{}' started on channel {} | connect and visit http://{}",
@@ -118,10 +110,7 @@ pub fn run_portal(
         ap_config.ip,
     );
 
-    // _dns must be kept alive for the entire lifetime of the portal. Dropping
-    // it signals the DNS thread to stop, which would break captive-portal
-    // detection on all platforms.
-    let _dns = Some(crate::dns::DnsServer::start(ap_config.ip)?);
+    let _dns = crate::dns::DnsServer::start(ap_config.ip)?;
 
     let (tx, rx) = mpsc::channel::<StoredCredentials>();
     let networks_clone = Arc::clone(&networks_json_str);
@@ -130,11 +119,10 @@ pub fn run_portal(
         Some(msg) => format!(r#"{{"error":"{}"}}"#, crate::portal::json_escape_str(msg)).into(),
     };
 
-    let mut server = EspHttpServer::new(&HttpConfig::default())
-        .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
+    let mut server = EspHttpServer::new(&HttpConfig::default()).map_err(http_err)?;
 
     crate::dns::register_captive_portal_handlers(&mut server, ap_config.ip)
-        .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
+        .map_err(|e| ProvisioningError::HttpServer(e))?;
 
     server
         .fn_handler(
@@ -145,10 +133,9 @@ pub fn run_portal(
                 Ok(())
             },
         )
-        .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
+        .map_err(http_err)?;
 
     let status_json = Arc::clone(&last_error_json);
-
     server
         .fn_handler(
             "/status",
@@ -160,7 +147,7 @@ pub fn run_portal(
                 Ok(())
             },
         )
-        .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
+        .map_err(http_err)?;
 
     server
         .fn_handler(
@@ -173,56 +160,42 @@ pub fn run_portal(
                 Ok(())
             },
         )
-        .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
+        .map_err(http_err)?;
 
     server
-        .fn_handler(
-            "/connect",
-            esp_idf_svc::http::Method::Post,
-            move |mut req| -> Result<(), BoxError> {
-                let mut body = Vec::new();
-                let mut buf = [0u8; 256];
-                let mut oversize = false;
+        .fn_handler("/connect", esp_idf_svc::http::Method::Post, move |mut req| -> Result<(), BoxError> {
+            let mut body     = Vec::new();
+            let mut buf      = [0u8; 256];
+            let mut oversize = false;
 
-                loop {
-                    let n = req.read(&mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    body.extend_from_slice(&buf[..n]);
-                    if body.len() > MAX_BODY_SIZE {
-                        oversize = true;
-                        // Drain the remaining request body before sending a
-                        // response. Some HTTP stacks misbehave if the server
-                        // closes the connection while the client is still
-                        // sending, so we consume any remaining bytes first.
-                        drain_request(&mut req);
-                        break;
-                    }
+            loop {
+                let n = req.read(&mut buf)?;
+                if n == 0 { break; }
+                body.extend_from_slice(&buf[..n]);
+                if body.len() > MAX_BODY_SIZE {
+                    oversize = true;
+                    drain_request(&mut req);
+                    break;
                 }
+            }
 
-                if oversize {
-                    req.into_response(400, Some("Bad Request"), &[])?
-                        .write_all(b"")?;
-                    return Ok(());
-                }
+            if oversize {
+                req.into_response(400, Some("Bad Request"), &[])?.write_all(b"")?;
+                return Ok(());
+            }
 
-                let response_body = match parse_credentials(&body) {
-                    Ok(creds) => {
-                        match tx.send(creds) {
-                            Ok(()) => r#"{"success":true}"#.to_string(),
-                            Err(_) => r#"{"success":false,"message":"Portal is closing, please reconnect and try again."}"#.to_string(),
-                        }
-                    }
-                    Err(msg) => format!(r#"{{"success":false,"message":"{}"}}"#, msg),
-                };
+            let response_body = match parse_credentials(&body) {
+                Ok(creds) => match tx.send(creds) {
+                    Ok(())  => r#"{"success":true}"#.to_string(),
+                    Err(_)  => r#"{"success":false,"message":"Portal is closing, please reconnect and try again."}"#.to_string(),
+                },
+                Err(msg) => format!(r#"{{"success":false,"message":"{}"}}"#, msg),
+            };
 
-                req.into_ok_response()?
-                    .write_all(response_body.as_bytes())?;
-                Ok(())
-            },
-        )
-        .map_err(|e| ProvisioningError::HttpServer(e.into()))?;
+            req.into_ok_response()?.write_all(response_body.as_bytes())?;
+            Ok(())
+        })
+        .map_err(http_err)?;
 
     log::info!(
         "Setup portal running at http://{} | waiting for credentials…",
@@ -236,15 +209,9 @@ pub fn run_portal(
                 drop(server);
                 drop(_dns);
 
-                // Give the HTTP response time to flush before the TCP stack
-                // is torn down by wifi.stop(). Without this delay, the
-                // {"success":true} response may never reach the browser,
-                // causing the UI to show an error even though provisioning
-                // succeeded.
                 thread::sleep(std::time::Duration::from_millis(500));
 
-                wifi.stop()
-                    .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+                wifi.stop().map_err(ProvisioningError::WifiDriver)?;
                 return Ok(creds);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -285,6 +252,7 @@ fn parse_credentials(body: &[u8]) -> Result<StoredCredentials, String> {
     let s = std::str::from_utf8(body).map_err(|_| "Invalid UTF-8".to_string())?;
     let (ssid, password) = s.split_once('\n').unwrap_or((s, ""));
     let ssid = ssid.trim().to_string();
+
     let password = password.trim_matches(['\r', '\n']).to_string();
 
     if ssid.is_empty() {

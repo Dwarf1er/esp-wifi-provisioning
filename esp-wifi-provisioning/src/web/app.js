@@ -49,7 +49,7 @@ togglePass.addEventListener("click", () => {
     const hidden = passIn.type === "password";
 
     passIn.type = hidden ? "text" : "password";
-    eyeIcon.classList.toggle("striked", hidden);
+    eyeIcon.classList.toggle("striked", !hidden);
 
     togglePass.setAttribute(
         "aria-label",
@@ -66,12 +66,13 @@ function validateSsid(isFinal) {
     const val = ssidIn.value.trim();
 
     if (val.length === 0) {
-        setSsidHint('', '');
-        return true;
+        if (isFinal) setSsidHint('Network name is required', 'err');
+        else setSsidHint('', '');
+        return isFinal ? false : true;
     }
 
     if (val.length > SSID_LEN_MAX) {
-        setSsidHint(`Network name is too long (max ${SSID_MAX} characters)`, 'err');
+        setSsidHint(`Network name is too long (max ${SSID_LEN_MAX} characters)`, 'err');
         return false;
     }
 
@@ -130,7 +131,7 @@ function barsHtml(n) {
         '</div>';
 }
 
-function renderNetworks(networks) {
+function renderNetworks(networks, moveFocus) {
     netDiv.innerHTML = '';
     netDiv.setAttribute('aria-activedescendant', '');
 
@@ -199,10 +200,12 @@ function renderNetworks(networks) {
         netDiv.appendChild(el);
     });
 
-    netDiv.querySelector('.net-item')?.focus();
+    if (moveFocus) {
+        netDiv.querySelector('.net-item')?.focus();
+    }
 }
 
-async function loadNetworks() {
+async function loadNetworks(moveFocus = false) {
     netDiv.textContent = 'Scanning networks…';
     rescanBtn.disabled = true;
     rescanBtn.textContent = '↺ Scanning…';
@@ -211,12 +214,12 @@ async function loadNetworks() {
     const timeoutId = setTimeout(() => controller.abort(), 15_000);
 
     try {
-        const r = await fetch('/networks');
+        const r = await fetch('/networks', { signal: controller.signal });
         if (!r.ok) throw new Error('non-200');
-        renderNetworks(await r.json());
+        renderNetworks(await r.json(), moveFocus);
     } catch {
         if (typeof DEV_NETWORKS !== 'undefined') {
-            renderNetworks(DEV_NETWORKS);
+            renderNetworks(DEV_NETWORKS, moveFocus);
         } else {
             netDiv.innerHTML =
                 '<p class="networks-err">Could not load networks. Try rescanning.</p>';
@@ -229,7 +232,7 @@ async function loadNetworks() {
 
 rescanBtn.addEventListener('click', () => {
     setStatus('', '');
-    loadNetworks();
+    loadNetworks(false);
 });
 
 async function handleSubmit() {
@@ -276,6 +279,7 @@ async function handleSubmit() {
         btn.disabled = false;
     } finally {
         spinner.style.display = 'none';
+        rescanBtn.disabled = false;
     }
 }
 
@@ -302,4 +306,4 @@ async function checkLastError() {
 }
 
 checkLastError();
-loadNetworks();
+loadNetworks(true);

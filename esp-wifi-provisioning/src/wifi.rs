@@ -7,16 +7,33 @@ use crate::nvs::StoredCredentials;
 
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
-    pub max_attempts: u8,
-    pub connect_timeout: Duration,
-    pub initial_backoff: Duration,
-    pub max_backoff: Duration,
+    max_attempts: u8,
+    connect_timeout: Duration,
+    initial_backoff: Duration,
+    max_backoff: Duration,
 }
 
 impl RetryConfig {
-    /// Validates the config, returning an error message if any field is
-    /// out of range. Called by [`Provisioner::provision`] before the first
-    /// connection attempt so misconfiguration is caught early.
+    pub fn max_attempts(mut self, n: u8) -> Self {
+        self.max_attempts = n;
+        self
+    }
+
+    pub fn connect_timeout(mut self, d: Duration) -> Self {
+        self.connect_timeout = d;
+        self
+    }
+
+    pub fn initial_backoff(mut self, d: Duration) -> Self {
+        self.initial_backoff = d;
+        self
+    }
+
+    pub fn max_backoff(mut self, d: Duration) -> Self {
+        self.max_backoff = d;
+        self
+    }
+
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
         if self.max_attempts == 0 {
             return Err("max_attempts must be at least 1");
@@ -57,7 +74,7 @@ pub(crate) fn scan_networks(
     for ap in wifi
         .wifi_mut()
         .scan()
-        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?
+        .map_err(ProvisioningError::WifiDriver)?
     {
         if ap.ssid.is_empty() {
             continue;
@@ -106,14 +123,10 @@ pub(crate) fn connect_with_retry(
     });
 
     wifi.set_configuration(&sta_config)
-        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+        .map_err(ProvisioningError::WifiDriver)?;
 
-    if !wifi
-        .is_started()
-        .map_err(|e| ProvisioningError::WifiDriver(e.into()))?
-    {
-        wifi.start()
-            .map_err(|e| ProvisioningError::WifiDriver(e.into()))?;
+    if !wifi.is_started().map_err(ProvisioningError::WifiDriver)? {
+        wifi.start().map_err(ProvisioningError::WifiDriver)?;
     }
 
     let mut backoff = config.initial_backoff;
@@ -128,6 +141,11 @@ pub(crate) fn connect_with_retry(
             }
             Err(cause) => {
                 log::warn!("Connection failed: {:?}", cause);
+                if matches!(cause, ConnectionFailureCause::DriverError(_)) {
+                    log::info!("Driver error | cycling WiFi stack before retry");
+                    let _ = wifi.stop();
+                    wifi.start().map_err(ProvisioningError::WifiDriver)?;
+                }
 
                 if attempt == config.max_attempts {
                     return Err(ProvisioningError::ConnectionFailed {
@@ -153,20 +171,17 @@ fn try_connect(
     let _ = wifi.disconnect();
 
     wifi.connect()
-        .map_err(|e| ConnectionFailureCause::DriverError(e.into()))?;
+        .map_err(ConnectionFailureCause::DriverError)?;
 
     let deadline = Instant::now() + timeout;
-
     loop {
         if wifi.is_connected().unwrap_or(false) {
             return Ok(());
         }
-
         if Instant::now() >= deadline {
             let _ = wifi.disconnect();
             return Err(ConnectionFailureCause::Timeout);
         }
-
         thread::sleep(Duration::from_millis(100));
     }
 }
