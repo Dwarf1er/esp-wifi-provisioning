@@ -225,6 +225,7 @@ async function loadNetworks(moveFocus = false) {
                 '<p class="networks-err">Could not load networks. Try rescanning.</p>';
         }
     } finally {
+        clearTimeout(timeoutId);
         rescanBtn.disabled = false;
         rescanBtn.textContent = '↺ Rescan';
     }

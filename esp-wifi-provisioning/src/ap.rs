@@ -21,14 +21,7 @@ static NETIF_KEY_CTR: AtomicU32 = AtomicU32::new(0);
 #[derive(Clone, Debug)]
 pub enum ApSecurity {
     Open,
-    Wep(String),
-    Wpa(String),
     Wpa2(String),
-    WpaWpa2(String),
-    Wpa2Enterprise,
-    Wpa3(String),
-    Wpa2Wpa3(String),
-    Wapi(String),
 }
 
 #[derive(Clone, Debug)]
