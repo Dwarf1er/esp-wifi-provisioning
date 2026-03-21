@@ -37,24 +37,36 @@ let wifi = Provisioner::new(wifi, nvs)
 
 ### Customisation
 
+Password-protect the setup AP and tune the connection retry behaviour:
+
 ```rust,no_run
 use std::time::Duration;
-use esp_wifi_provisioning::{Provisioner, ApConfig, ApSecurity, RetryConfig};
+use esp_wifi_provisioning::{Provisioner, RetryConfig};
 
 let wifi = Provisioner::new(wifi, nvs)
-    // Soft-AP settings
     .ap_ssid("Sensor-Setup")
-    .ap_password("secret123") // omit for an open AP (default)
-
-    // Or replace the entire AP config for channel/IP control:
-    // .ap_config(ApConfig { channel: 11, ..ApConfig::default() })
-
-    // Connection retry settings
+    .ap_password("secret123") // omit to leave the setup AP open (default)
     .retry_config(
         RetryConfig::default()
             .max_attempts(3)
             .connect_timeout(Duration::from_secs(15)),
     )
+    .provision()?;
+```
+
+Use `ApConfig` directly when you need to control the channel or AP IP address:
+
+```rust,no_run
+use std::net::Ipv4Addr;
+use esp_wifi_provisioning::{Provisioner, ApConfig};
+
+let wifi = Provisioner::new(wifi, nvs)
+    .ap_config(ApConfig {
+        ssid: "Sensor-Setup".into(),
+        channel: 11,
+        ip: Ipv4Addr::new(10, 0, 0, 1),
+        ..ApConfig::default()
+    })
     .provision()?;
 ```
 

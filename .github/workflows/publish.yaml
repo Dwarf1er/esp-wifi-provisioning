@@ -1,0 +1,76 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: master
+
+      - name: Validate tag format
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: tag '$TAG' is not in vX.Y.Z format" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Bump version in Cargo.toml
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          MANIFEST="esp-wifi-provisioning/Cargo.toml"
+
+          # Sanity-check: fail if the version field isn't found where expected
+          if ! grep -q '^version = ' "$MANIFEST"; then
+            echo "ERROR: could not find 'version = ' in $MANIFEST" >&2
+            exit 1
+          fi
+
+          # Only replace the first occurrence (the [package] version, not a
+          # dependency version that happens to share the same value)
+          sed -i "0,/^version = .*/s//version = \"$VERSION\"/" "$MANIFEST"
+
+          echo "Bumped $MANIFEST to $VERSION"
+          grep '^version = ' "$MANIFEST"
+
+      - name: Update Cargo.lock
+        run: cargo update --workspace --precise "${{ steps.version.outputs.version }}" \
+               esp-wifi-provisioning 2>/dev/null || cargo generate-lockfile
+
+      - name: Commit version bump
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add esp-wifi-provisioning/Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+          git push origin master
+
+      - name: Verify tag still points to the right place
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git tag -f "$TAG"
+          git push origin "refs/tags/$TAG" --force
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --package esp-wifi-provisioning
