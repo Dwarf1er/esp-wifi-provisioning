@@ -84,6 +84,7 @@ jobs:
           git push origin "refs/tags/$TAG" --force
 
       - name: Publish to crates.io
+        continue-on-error: true
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --package esp-wifi-provisioning --allow-dirty
