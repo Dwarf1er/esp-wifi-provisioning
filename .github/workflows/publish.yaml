@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0)"
+        required: true
 
 jobs:
   publish:
@@ -22,7 +27,7 @@ jobs:
       - name: Validate tag format
         id: version
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${{ github.event.inputs.tag || env.GITHUB_REF_NAME }}"
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "ERROR: tag '$TAG' is not in vX.Y.Z format" >&2
             exit 1
@@ -78,7 +83,12 @@ jobs:
           git tag -f "$TAG"
           git push origin "refs/tags/$TAG" --force
 
-     - name: Create GitHub release
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --package esp-wifi-provisioning --allow-dirty
+
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -86,8 +96,3 @@ jobs:
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes \
             --verify-tag
-
-      - name: Publish to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --package esp-wifi-provisioning --allow-dirty
