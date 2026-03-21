@@ -1,7 +1,7 @@
 <div align="center">
 
 # esp-wifi-provisioning
-#### Rust implementation of a WiFi provisioning captive portal for ESP32
+#### Captive-portal WiFi provisioning for ESP32 targets via esp-idf-svc
 
 <img alt="esp-wifi-provisioning logo" src="https://raw.githubusercontent.com/Dwarf1er/esp-wifi-provisioning/master/assets/esp-wifi-provisioning-logo.png" height="250" />
 
