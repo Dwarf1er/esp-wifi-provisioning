@@ -2,9 +2,9 @@
 name = "example"
 version = "0.1.0"
 authors = ["Dwarf1er"]
-edition = "2021"
+edition = "2024"
 resolver = "2"
-rust-version = "1.77"
+rust-version = "1.85"
 
 [[bin]]
 name = "example"

@@ -1,3 +1,16 @@
+//! Soft-AP lifecycle and captive-portal HTTP server.
+//!
+//! The entry point is [`run_portal`], which:
+//!
+//! 1. Starts the WiFi driver in station mode briefly to scan visible networks.
+//! 2. Switches to AP mode using the caller-supplied [`ApConfig`].
+//! 3. Starts a minimal DNS responder (see [`crate::dns`]) so that OS captive-
+//!    portal detection redirects the user to the setup page automatically.
+//! 4. Serves four HTTP endpoints: `/` (the portal UI), `/status` (last error),
+//!    `/networks` (scan results as JSON), and `/connect` (credential submission).
+//! 5. Blocks until valid credentials arrive over `/connect`, then tears
+//!    everything down and returns them.
+
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
@@ -15,20 +28,52 @@ use crate::error::{BoxError, ProvisioningError};
 use crate::nvs::{SSID_LEN_MAX, StoredCredentials, WPA_PASS_LEN_MAX, WPA_PASS_LEN_MIN};
 use crate::portal::{index_html, networks_json};
 
+/// Maximum allowed body size for a `/connect` POST request: SSID + password +
+/// the separating newline and a trailing newline, with one byte of margin.
 const MAX_BODY_SIZE: usize = SSID_LEN_MAX + WPA_PASS_LEN_MAX + 2;
+
+/// Monotonic counter used to generate a unique `EspNetif` key each time
+/// `run_portal` is called, avoiding key collisions on repeated invocations.
 static NETIF_KEY_CTR: AtomicU32 = AtomicU32::new(0);
 
+/// Security configuration for the provisioning soft-AP.
+///
+/// In practice almost all deployments use [`ApSecurity::Open`] (the default)
+/// so that users can connect to the setup network without any prior credentials.
+/// [`ApSecurity::Wpa2`] is available for deployments that require the setup AP
+/// itself to be password-protected.
+///
+/// # Note
+///
+/// These variants describe the *soft-AP* security only. The target network
+/// that the user is provisioning *onto* is handled separately and supports the
+/// full range of auth methods that `esp-idf-svc` exposes.
 #[derive(Clone, Debug)]
 pub enum ApSecurity {
+    /// No password, anyone in range can connect to the setup AP.
     Open,
+    /// WPA2-Personal with the given password.
+    ///
+    /// The password must be 8–63 ASCII characters (standard WPA2 constraint).
     Wpa2(String),
 }
 
+/// Configuration for the provisioning soft-AP.
+///
+/// Build one explicitly when you need control over the channel or IP address,
+/// otherwise the builder methods on [`Provisioner`](crate::Provisioner) cover
+/// the common SSID and security cases without touching this struct directly.
 #[derive(Clone, Debug)]
 pub struct ApConfig {
+    /// SSID broadcast by the soft-AP. Defaults to `"ESP32-Setup"`.
     pub ssid: String,
+    /// Security mode for the soft-AP. Defaults to [`ApSecurity::Open`].
     pub security: ApSecurity,
+    /// 802.11 channel for the soft-AP. Defaults to `6`.
     pub channel: u8,
+    /// IP address assigned to the soft-AP interface (also used as the DHCP
+    /// gateway and the DNS server address for captive-portal detection).
+    /// Defaults to `192.168.4.1`.
     pub ip: Ipv4Addr,
 }
 
@@ -43,10 +88,29 @@ impl Default for ApConfig {
     }
 }
 
+/// Wraps an arbitrary `std::error::Error` into a [`ProvisioningError::HttpServer`].
 fn http_err(e: impl std::error::Error + Send + Sync + 'static) -> ProvisioningError {
     ProvisioningError::HttpServer(Box::new(e))
 }
 
+/// Starts the captive-portal soft-AP, blocks until the user submits valid WiFi
+/// credentials, then tears down the AP and returns those credentials.
+///
+/// # Arguments
+///
+/// * `wifi`, mutable reference to the WiFi driver (must not be started).
+/// * `ap_config`, channel, IP, SSID, and security for the soft-AP.
+/// * `last_error`, optional error string from a previous failed connection
+///   attempt; shown as a banner in the portal UI so the user understands why
+///   the portal reappeared.
+///
+/// # Errors
+///
+/// Returns a [`ProvisioningError`] for unrecoverable failures such as being
+/// unable to start the AP, bind the HTTP server, or communicate over the WiFi
+/// driver. Validation errors from the user (bad SSID, wrong password length)
+/// are surfaced in the portal UI and do *not* cause this function to return an
+/// error.
 pub fn run_portal(
     wifi: &mut BlockingWifi<EspWifi<'_>>,
     ap_config: &ApConfig,
@@ -70,6 +134,8 @@ pub fn run_portal(
 
     let networks_json_str: Arc<str> = networks_json(&networks).into();
 
+    // Each invocation needs a unique netif key or esp-idf will refuse to
+    // create a second AP interface.
     let key_n = NETIF_KEY_CTR.fetch_add(1, Ordering::Relaxed);
     let key = format!("AP_{key_n}");
 
@@ -217,6 +283,12 @@ pub fn run_portal(
     }
 }
 
+/// Converts an [`ApConfig`] into the `esp-idf-svc` [`Configuration`] type
+/// needed to call `wifi.set_configuration`.
+///
+/// Only [`ApSecurity::Open`] and [`ApSecurity::Wpa2`] are supported by the
+/// esp-idf soft-AP driver; other variants are not reachable because `ApSecurity`
+/// only exposes those two.
 fn build_ap_config(cfg: &ApConfig) -> Result<Configuration, ProvisioningError> {
     let (auth, password) = match &cfg.security {
         ApSecurity::Open => (AuthMethod::None, Default::default()),
@@ -241,6 +313,12 @@ fn build_ap_config(cfg: &ApConfig) -> Result<Configuration, ProvisioningError> {
     }))
 }
 
+/// Parses a `/connect` request body (`"<ssid>\n<password>"`) into a
+/// [`StoredCredentials`] struct, returning a user-facing error string on any
+/// validation failure.
+///
+/// The password field is optional: an absent or empty password is interpreted
+/// as an open (unauthenticated) network.
 fn parse_credentials(body: &[u8]) -> Result<StoredCredentials, String> {
     let s = std::str::from_utf8(body).map_err(|_| "Invalid UTF-8".to_string())?;
     let (ssid, password) = s.split_once('\n').unwrap_or((s, ""));
@@ -286,6 +364,11 @@ fn parse_credentials(body: &[u8]) -> Result<StoredCredentials, String> {
     })
 }
 
+/// Reads and discards the remainder of an oversized request body.
+///
+/// `esp-idf-svc` requires the full request body to be consumed before a
+/// response can be sent; this helper drains it when we've already decided to
+/// reject the request.
 fn drain_request(
     req: &mut esp_idf_svc::http::server::Request<
         &mut esp_idf_svc::http::server::EspHttpConnection<'_>,

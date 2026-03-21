@@ -2,6 +2,14 @@
 name = "esp-wifi-provisioning"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+resolver = "2"
+description = "Captive-portal WiFi provisioning for ESP32 targets via esp-idf-svc"
+license = "MIT"
+repository = "https://github.com/Dwarf1er/esp-wifi-provisioning"
+readme = "README.md"
+keywords = ["esp32", "wifi", "provisioning", "captive-portal", "embedded"]
+categories = ["embedded", "network-programming"]
 
 [dependencies]
 log           = { workspace = true }

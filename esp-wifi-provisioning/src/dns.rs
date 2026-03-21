@@ -1,3 +1,23 @@
+//! Minimal DNS server and captive-portal HTTP handlers.
+//!
+//! # DNS responder
+//!
+//! [`DnsServer`] listens on UDP port 53 and responds to every A-record query
+//! with the AP's own IP address. This is the standard "DNS hijack" technique
+//! used by captive portals: when a device connects to the AP and tries to
+//! resolve any hostname, it gets back the portal IP, which triggers the OS's
+//! captive-portal detection UI.
+//!
+//! The server runs on a background thread and stops automatically when the
+//! [`DnsServer`] value is dropped (via the `_stop_tx` sentinel channel).
+//!
+//! # Captive-portal HTTP handlers
+//!
+//! Different operating systems probe different URLs to detect captive portals.
+//! [`register_captive_portal_handlers`] registers routes for all known probes
+//! so that the setup UI appears automatically on Windows, macOS, iOS, Android,
+//! and Firefox without the user having to open a browser manually.
+
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::mpsc;
 use std::thread;
@@ -7,11 +27,25 @@ use esp_idf_svc::io::Write;
 
 use crate::error::{BoxError, ProvisioningError};
 
+/// A running DNS server that answers every A-record query with a fixed IP.
+///
+/// The server stops when this value is dropped: dropping it closes the
+/// `_stop_tx` sender, which the background thread detects and uses as its
+/// shutdown signal.
 pub struct DnsServer {
+    /// Kept alive solely to signal the background thread on drop.
     _stop_tx: mpsc::Sender<()>,
 }
 
 impl DnsServer {
+    /// Spawns the DNS background thread and starts listening on `0.0.0.0:53`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProvisioningError::HttpServer`] if the thread cannot be
+    /// spawned. Bind failures are logged by the background thread and do not
+    /// propagate back here (the portal will still work; OS detection just may
+    /// not trigger automatically).
     pub fn start(ip: Ipv4Addr) -> Result<Self, ProvisioningError> {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
@@ -27,6 +61,11 @@ impl DnsServer {
     }
 }
 
+/// Main loop for the DNS background thread.
+///
+/// Binds UDP/53, then processes incoming queries until the stop channel is
+/// closed. Uses a 250 ms read timeout so the loop can check the stop signal
+/// without blocking indefinitely.
 fn run(ap_ip: Ipv4Addr, stop: mpsc::Receiver<()>) {
     let socket = match UdpSocket::bind("0.0.0.0:53") {
         Ok(s) => s,
@@ -80,6 +119,14 @@ fn run(ap_ip: Ipv4Addr, stop: mpsc::Receiver<()>) {
     log::info!("DNS server stopped");
 }
 
+/// Constructs a DNS response that resolves any A-record query to `ip`.
+///
+/// Non-A queries (AAAA, MX, etc.) receive a valid response with an empty
+/// answer section (ANCOUNT = 0) rather than an error, which is the correct
+/// behaviour for a hijacking resolver.
+///
+/// Returns `None` if the query is malformed (too short or contains a
+/// compressed name pointer in the question section, which is illegal).
 fn build_response(query: &[u8], ip: Ipv4Addr) -> Option<Vec<u8>> {
     if query.len() < 12 {
         return None;
@@ -110,10 +157,10 @@ fn build_response(query: &[u8], ip: Ipv4Addr) -> Option<Vec<u8>> {
     resp.push(0x00);
     resp.push(0x00); // ARCOUNT
 
-    // Question section — only the question, not trailing additional sections
+    // Question section, only the question, not trailing additional sections
     resp.extend_from_slice(&query[12..question_end]);
 
-    // Answer — only for A queries
+    // Answer, only for A queries
     if is_a {
         resp.push(0xc0);
         resp.push(0x0c); // Name pointer → offset 12
@@ -133,6 +180,11 @@ fn build_response(query: &[u8], ip: Ipv4Addr) -> Option<Vec<u8>> {
     Some(resp)
 }
 
+/// Returns the byte offset of the first byte *after* the QNAME field, i.e.
+/// the position of the QTYPE field.
+///
+/// Returns `None` if the QNAME is truncated, exceeds the buffer, or contains
+/// a compression pointer (which is illegal in the question section).
 fn parse_qname_end(buf: &[u8], mut offset: usize) -> Option<usize> {
     loop {
         let len = *buf.get(offset)? as usize;
@@ -149,6 +201,17 @@ fn parse_qname_end(buf: &[u8], mut offset: usize) -> Option<usize> {
     }
 }
 
+/// Registers HTTP routes on `server` that handle OS captive-portal detection
+/// probes, redirecting them to the portal UI at `http://{ip}`.
+///
+/// Each major OS (Windows 10/11, macOS/iOS, Android, Firefox) uses a different
+/// URL to test for internet connectivity. By responding to these probes
+/// correctly, the OS automatically presents the "sign in to network" UI,
+/// sparing the user from having to open a browser manually.
+///
+/// # Errors
+///
+/// Returns a [`BoxError`] if any handler registration fails.
 pub fn register_captive_portal_handlers(
     server: &mut EspHttpServer,
     ip: Ipv4Addr,
@@ -162,7 +225,7 @@ pub fn register_captive_portal_handlers(
         |req| -> Result<(), BoxError> { redirect(req, "http://logout.net") },
     )?;
 
-    // Windows 10, 404 prevents it from hammering the device
+    // Windows 10, 404 prevents it from spamming the device
     server.fn_handler(
         "/wpad.dat",
         esp_idf_svc::http::Method::Get,
@@ -235,6 +298,7 @@ pub fn register_captive_portal_handlers(
     Ok(())
 }
 
+/// Sends an HTTP 302 redirect to `url`.
 fn redirect<'a>(
     req: esp_idf_svc::http::server::Request<&mut esp_idf_svc::http::server::EspHttpConnection<'a>>,
     url: &str,
@@ -244,6 +308,7 @@ fn redirect<'a>(
     Ok(())
 }
 
+/// Sends an HTTP 404 response with an empty body.
 fn not_found<'a>(
     req: esp_idf_svc::http::server::Request<&mut esp_idf_svc::http::server::EspHttpConnection<'a>>,
 ) -> Result<(), BoxError> {
