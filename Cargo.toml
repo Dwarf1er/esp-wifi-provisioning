@@ -14,6 +14,6 @@ opt-level = "z"
 
 [workspace.dependencies]
 log = "0.4"
-esp-idf-svc = { version = "0.51", features = ["std", "binstart"] }
-esp-idf-hal = { version = "0.45", features = ["rmt-legacy"] }
+esp-idf-svc = { version = "^0.51", features = ["std", "binstart"] }
+esp-idf-hal = { version = "^0.45", features = ["rmt-legacy"] }
 embuild = "0.33"
