@@ -22,7 +22,7 @@ jobs:
       - name: Validate tag format
         id: version
         run: |
-          TAG="${{ github.event.inputs.tag || env.GITHUB_REF_NAME }}"
+          TAG="${GITHUB_REF#refs/tags/}"  # Strip out "refs/tags/"
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "ERROR: tag '$TAG' is not in vX.Y.Z format" >&2
             exit 1
