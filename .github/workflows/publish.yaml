@@ -19,6 +19,9 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: master
 
+      - name: Debug GITHUB_REF
+        run: echo "GITHUB_REF: $GITHUB_REF"
+
       - name: Validate tag format
         id: version
         run: |
